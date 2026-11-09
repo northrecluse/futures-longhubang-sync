@@ -27,7 +27,7 @@ def log_print(msg):
 def get_target_date_range_trade_days(
     start_date_str='2023-01-01', end_date_str=None
 ):
-  """获取从 2023-01-01 到今天的指定日期范围内的所有实际交易日"""
+  """获取从 2023-01-01 到今天的指定日期范围内的所有实际交易日（自动排除周末及法定节假日）"""
   if not end_date_str:
     end_date_str = datetime.now().strftime('%Y-%m-%d')
 
@@ -203,30 +203,35 @@ def check_company_match(seat_name, target_companies):
   return False
 
 
-def safe_goto(page, url, timeout=60000, wait_until='commit'):
+def safe_goto(page, url, timeout=60000, wait_until='domcontentloaded'):
+  """安全打开网页，带超时和重试机制"""
   for attempt in range(1, 4):
     try:
       page.goto(url, wait_until=wait_until, timeout=timeout)
-      page.wait_for_timeout(1000)
-      return True
-    except Exception:
       page.wait_for_timeout(1500)
+      return True
+    except Exception as e:
+      log_print(f'⚠️ 打开页面超时或异常 ({e})，正在重试...')
+      page.wait_for_timeout(2000)
   return False
 
 
 def auto_login_and_close_ad(page, username, password):
+  """自动填写账号密码、OCR识别验证码登录，并自动关闭广告弹窗（高稳健版本）"""
   log_print('正在打开登录页面...')
   if not safe_goto(page, 'https://jiaoyikecha.com/#/user/login'):
+    log_print('❌ 无法打开登录页面，网络异常！')
     return False
 
   ocr = ddddocr.DdddOcr(show_ad=False)
-  for attempt in range(1, 11):
+  max_retries = 10
+
+  for attempt in range(1, max_retries + 1):
     try:
-      page.wait_for_selector(
-          "input[placeholder*='账号'], input[placeholder*='手机号'],"
-          " input[type='text']",
-          timeout=15000,
-      )
+      log_print(f'\n--- 第 {attempt} 次尝试登录 ---')
+
+      # 1. 填写账号和密码
+      log_print('正在填写账号和密码...')
       user_locator = page.locator(
           "input[placeholder*='账号'], input[placeholder*='手机号'],"
           " input[type='text']"
@@ -235,44 +240,85 @@ def auto_login_and_close_ad(page, username, password):
           "input[placeholder*='密码'], input[type='password']"
       ).first
 
-      user_locator.fill(username)
-      pwd_locator.fill(password)
+      user_locator.click()
+      user_locator.fill('')
+      user_locator.type(username, delay=30)
+      user_locator.dispatch_event('input')
 
+      pwd_locator.click()
+      pwd_locator.fill('')
+      pwd_locator.type(password, delay=30)
+      pwd_locator.dispatch_event('input')
+
+      # 2. 定位并截取验证码
       captcha_locator = page.locator(
           "img[src*='captcha'], img[class*='code'], .el-input + img, canvas,"
           ' form img'
       ).first
       captcha_bytes = captcha_locator.screenshot()
       captcha_code = ocr.classification(captcha_bytes)
-      log_print(f'-> 【ddddocr】验证码识别结果: {captcha_code}')
+      log_print(f'-> 【ddddocr】识别结果: {captcha_code}')
 
+      # 填写验证码
       code_locator = page.locator(
           "input[placeholder*='图形验证码'], input[placeholder*='验证码']"
       ).first
-      code_locator.fill(captcha_code)
-      page.wait_for_timeout(300)
+      code_locator.click()
+      code_locator.fill('')
+      code_locator.type(captcha_code, delay=30)
+      code_locator.dispatch_event('input')
+      page.wait_for_timeout(500)
 
+      # 3. 点击绿色主登录按钮
+      log_print('正在精准点击绿色登录大按钮...')
       login_btn = page.locator(
           ".el-button--primary, button:has-text('登录')"
       ).first
-      login_btn.click(force=True)
 
-      page.wait_for_timeout(3000)
-      if 'login' not in page.url:
-        log_print('🎉 成功登录系统！')
+      if login_btn.count() > 0:
+        box = login_btn.bounding_box()
+        if box:
+          center_x = box['x'] + box['width'] / 2
+          center_y = box['y'] + box['height'] / 2
+          page.mouse.click(center_x, center_y, force=True)
+        else:
+          login_btn.click(force=True)
+      else:
+        page.locator('button').last.click(force=True)
+
+      # 等待页面跳转
+      page.wait_for_timeout(4000)
+      current_url = page.url
+
+      if 'login' not in current_url:
+        log_print('🎉 恭喜！成功登录系统！')
+        page.wait_for_timeout(3000)
+
+        # 检测并自动关闭广告弹窗
         try:
+          log_print('正在检测并关闭广告弹窗...')
           close_btn = page.locator(
               '.el-dialog__headerbtn, .el-dialog__close, div[role="dialog"]'
               " button, [class*='close']"
           ).last
-          if close_btn.is_visible(timeout=2000):
+
+          if close_btn.is_visible(timeout=3000):
             close_btn.click(force=True)
-        except:
+            log_print('✅ 成功关闭广告弹窗！')
+            page.wait_for_timeout(1000)
+        except Exception:
           pass
+
         return True
+      else:
+        log_print('⚠️ 验证码识别错误，正在自动刷新验证码重试...')
+        captcha_locator.click()
+        page.wait_for_timeout(1000)
+
     except Exception as e:
-      log_print(f'⚠️ 登录尝试 {attempt} 异常: {e}')
+      log_print(f'❌ 登录尝试过程中发生异常: {e}')
       page.wait_for_timeout(1000)
+
   return False
 
 
@@ -338,7 +384,9 @@ def crawl_single_variety(context, date_str, raw_variety, index, total):
                         return { long_table: longData, short_table: shortData };
                     }
                 """)
-        long_rows, short_rows = table_data.get('long_table', []), table_data.get('short_table', [])
+        long_rows, short_rows = table_data.get(
+            'long_table', []
+        ), table_data.get('short_table', [])
         if len(long_rows) > 2 or len(short_rows) > 2:
           break
       except:
@@ -358,18 +406,22 @@ def crawl_single_variety(context, date_str, raw_variety, index, total):
           })
       df = pd.DataFrame(lst)
       if not df.empty:
-        df = df.sort_values(by='num_val', ascending=is_long).reset_index(drop=True)
+        df = df.sort_values(by='num_val', ascending=is_long).reset_index(
+            drop=True
+        )
       return df
 
     df_long = clean_rows(long_rows, True)
     df_short = clean_rows(short_rows, False)
-    return v_name, {'long': df_long, 'short': df_short}
+    return raw_variety, {'long': df_long, 'short': df_short}
   finally:
     page.close()
 
 
 def export_excel_for_date(parsed_variety_data, date_str, output_folder):
-  output_file = os.path.join(output_folder, f'全品种期货持仓龙虎榜汇总_{date_str}.xlsx')
+  output_file = os.path.join(
+      output_folder, f'全品种期货持仓龙虎榜汇总_{date_str}.xlsx'
+  )
   group1 = ['永安期货', '国泰君安', '东证期货', '高盛期货']
   group2 = ['方正中期', '东方财富', '平安期货', '徽商期货']
   summary = []
@@ -394,9 +446,13 @@ def export_excel_for_date(parsed_variety_data, date_str, output_folder):
       })
 
       if not df_l.empty:
-        df_l.drop(columns=['num_val']).to_excel(writer, sheet_name=v_name[:31], startcol=0, startrow=1, index=False)
+        df_l.drop(columns=['num_val']).to_excel(
+            writer, sheet_name=v_name[:31], startcol=0, startrow=1, index=False
+        )
       if not df_s.empty:
-        df_s.drop(columns=['num_val']).to_excel(writer, sheet_name=v_name[:31], startcol=5, startrow=1, index=False)
+        df_s.drop(columns=['num_val']).to_excel(
+            writer, sheet_name=v_name[:31], startcol=5, startrow=1, index=False
+        )
 
     if summary:
       pd.DataFrame(summary).to_excel(writer, sheet_name='统计汇总', index=False)
@@ -405,7 +461,9 @@ def export_excel_for_date(parsed_variety_data, date_str, output_folder):
 
   # 美化样式
   wb = openpyxl.load_workbook(output_file)
-  header_fill = PatternFill(start_color='1F4E78', end_color='1F4E78', fill_type='solid')
+  header_fill = PatternFill(
+      start_color='1F4E78', end_color='1F4E78', fill_type='solid'
+  )
   header_font = Font(name='微软雅黑', size=10, bold=True, color='FFFFFF')
   thin_border = Border(
       left=Side(style='thin', color='D9D9D9'),
@@ -416,9 +474,13 @@ def export_excel_for_date(parsed_variety_data, date_str, output_folder):
 
   for ws in wb.worksheets:
     for row_idx, row in enumerate(ws.iter_rows(), start=1):
-      is_header = (ws.title == '统计汇总' and row_idx == 1) or (ws.title != '统计汇总' and row_idx == 2)
+      is_header = (ws.title == '统计汇总' and row_idx == 1) or (
+          ws.title != '统计汇总' and row_idx == 2
+      )
       for col_idx, cell in enumerate(row, start=1):
-        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        cell.alignment = Alignment(
+            horizontal='center', vertical='center', wrap_text=True
+        )
         cell.border = thin_border
         if ws.title == '统计汇总' and row_idx > 1 and col_idx == 1:
           cell.number_format = 'yyyy-mm-dd'
@@ -427,7 +489,10 @@ def export_excel_for_date(parsed_variety_data, date_str, output_folder):
           cell.font = header_font
     for col in ws.columns:
       max_len = max(
-          (sum(2 if ord(c) > 127 else 1 for c in str(cell.value or '')) for cell in col),
+          (
+              sum(2 if ord(c) > 127 else 1 for c in str(cell.value or ''))
+              for cell in col
+          ),
           default=0,
       )
       ws.column_dimensions[col[0].column_letter].width = max(max_len + 4, 12)
@@ -438,11 +503,15 @@ def export_excel_for_date(parsed_variety_data, date_str, output_folder):
 
 def main():
   log_print('=' * 60)
-  log_print('🚀 启动期货龙虎榜智能分时接力采集程序 (单次限时 5.5 小时)')
+  log_print(
+      '🚀 启动期货龙虎榜智能分时接力采集程序 (2023-01-01 至今 + 稳健OCR登录)'
+  )
   log_print('=' * 60)
 
   script_start_time = time.time()
-  MAX_RUN_SECONDS = 5.5 * 3600  # 💡 5.5 小时 = 19800 秒（留出半小时安全余量，绝对不会超时中断）
+  MAX_RUN_SECONDS = (
+      5.5 * 3600
+  )  # 💡 5.5 小时 = 19800 秒（留出半小时安全余量，避免服务器超时中断）
 
   target_dates = get_target_date_range_trade_days('2023-01-01')
   varieties = get_filtered_varieties()
@@ -466,19 +535,24 @@ def main():
       f' {len(pending_dates)} 天'
   )
 
-  username = os.environ.get('JYKC_USER', '18392272125')
-  password = os.environ.get('JYKC_PASS', 'lmn123')
+  username = os.environ.get('USER_PHONE', '18392272125')
+  password = os.environ.get('USER_PWD', 'lmn123')
   MAX_WORKERS = 3
 
   with sync_playwright() as p:
     browser = p.chromium.launch(
         headless=True,
-        args=['--no-sandbox', '--disable-setuid-sandbox', '--ignore-certificate-errors'],
+        args=[
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--ignore-certificate-errors',
+        ],
     )
     context = browser.new_context(ignore_https_errors=True)
     login_page = context.new_page()
     login_page.set_default_timeout(60000)
 
+    # 💡 使用您验证过的高稳健登录和弹窗关闭函数
     if not auto_login_and_close_ad(login_page, username, password):
       log_print('❌ 初始登录失败，退出程序！')
       browser.close()
@@ -497,7 +571,7 @@ def main():
 
       log_print(
           f"\n{'='*25} 正在处理待补全交易日 [{idx}/{len(pending_dates)}]:"
-          f' {date_str} (已耗时: {elapsed_time/3600:.2f}小时) {'='*25}'
+          f" {date_str} (已耗时: {elapsed_time/3600:.2f}小时) {'='*25}"
       )
       parsed_variety_data = {}
       total_v = len(varieties)
@@ -528,10 +602,19 @@ def main():
 
   # 每次单次任务结束前，自动将已抓取的数据同步推送到云端 GitHub 仓库
   try:
-    subprocess.run(['git', 'config', '--global', 'user.name', 'GitHub Action Bot'], check=True)
-    subprocess.run(['git', 'config', '--global', 'user.email', 'action@github.com'], check=True)
+    subprocess.run(
+        ['git', 'config', '--global', 'user.name', 'GitHub Action Bot'],
+        check=True,
+    )
+    subprocess.run(
+        ['git', 'config', '--global', 'user.email', 'action@github.com'],
+        check=True,
+    )
     subprocess.run(['git', 'add', output_folder], check=True)
-    subprocess.run(['git', 'commit', '-m', f'Auto-sync batch futures data update'], check=True)
+    subprocess.run(
+        ['git', 'commit', '-m', 'Auto-sync batch futures data update'],
+        check=True,
+    )
     subprocess.run(['git', 'push'], check=True)
     log_print('🚀 当前批次数据已成功自动同步推送到云端 GitHub 仓库！')
   except Exception as e:
