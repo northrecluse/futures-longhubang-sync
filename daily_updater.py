@@ -1,9 +1,7 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 import os
 import re
 import subprocess
-import threading
 import time
 import urllib.parse
 import chinese_calendar as chinesecalendar
@@ -13,15 +11,11 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 import pandas as pd
 from playwright.sync_api import sync_playwright
 
-# 创建线程锁，保证控制台日志打印不乱码、不交错
-print_lock = threading.Lock()
-
 
 def log_print(msg):
-  """带具体时间显示的线程安全控制台输出函数"""
-  with print_lock:
-    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    print(f'[{current_time}] {msg}')
+  """带具体时间显示的控制台输出函数"""
+  current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+  print(f'[{current_time}] {msg}')
 
 
 def get_target_date_range_trade_days(
@@ -204,20 +198,18 @@ def check_company_match(seat_name, target_companies):
 
 
 def safe_goto(page, url, timeout=60000, wait_until='domcontentloaded'):
-  """安全打开网页，带超时和重试机制"""
   for attempt in range(1, 4):
     try:
       page.goto(url, wait_until=wait_until, timeout=timeout)
-      page.wait_for_timeout(1500)
+      page.wait_for_timeout(1000)
       return True
     except Exception as e:
       log_print(f'⚠️ 打开页面超时或异常 ({e})，正在重试...')
-      page.wait_for_timeout(2000)
+      page.wait_for_timeout(1500)
   return False
 
 
 def auto_login_and_close_ad(page, username, password):
-  """自动填写账号密码、OCR识别验证码登录，并自动关闭广告弹窗（高稳健版本）"""
   log_print('正在打开登录页面...')
   if not safe_goto(page, 'https://jiaoyikecha.com/#/user/login'):
     log_print('❌ 无法打开登录页面，网络异常！')
@@ -229,9 +221,6 @@ def auto_login_and_close_ad(page, username, password):
   for attempt in range(1, max_retries + 1):
     try:
       log_print(f'\n--- 第 {attempt} 次尝试登录 ---')
-
-      # 1. 填写账号和密码
-      log_print('正在填写账号和密码...')
       user_locator = page.locator(
           "input[placeholder*='账号'], input[placeholder*='手机号'],"
           " input[type='text']"
@@ -250,7 +239,6 @@ def auto_login_and_close_ad(page, username, password):
       pwd_locator.type(password, delay=30)
       pwd_locator.dispatch_event('input')
 
-      # 2. 定位并截取验证码
       captcha_locator = page.locator(
           "img[src*='captcha'], img[class*='code'], .el-input + img, canvas,"
           ' form img'
@@ -259,7 +247,6 @@ def auto_login_and_close_ad(page, username, password):
       captcha_code = ocr.classification(captcha_bytes)
       log_print(f'-> 【ddddocr】识别结果: {captcha_code}')
 
-      # 填写验证码
       code_locator = page.locator(
           "input[placeholder*='图形验证码'], input[placeholder*='验证码']"
       ).first
@@ -269,153 +256,133 @@ def auto_login_and_close_ad(page, username, password):
       code_locator.dispatch_event('input')
       page.wait_for_timeout(500)
 
-      # 3. 点击绿色主登录按钮
-      log_print('正在精准点击绿色登录大按钮...')
       login_btn = page.locator(
           ".el-button--primary, button:has-text('登录')"
       ).first
-
       if login_btn.count() > 0:
         box = login_btn.bounding_box()
         if box:
-          center_x = box['x'] + box['width'] / 2
-          center_y = box['y'] + box['height'] / 2
-          page.mouse.click(center_x, center_y, force=True)
+          page.mouse.click(
+              box['x'] + box['width'] / 2, box['y'] + box['height'] / 2, force=True
+          )
         else:
           login_btn.click(force=True)
       else:
         page.locator('button').last.click(force=True)
 
-      # 等待页面跳转
       page.wait_for_timeout(4000)
-      current_url = page.url
-
-      if 'login' not in current_url:
+      if 'login' not in page.url:
         log_print('🎉 恭喜！成功登录系统！')
         page.wait_for_timeout(3000)
-
-        # 检测并自动关闭广告弹窗
         try:
-          log_print('正在检测并关闭广告弹窗...')
           close_btn = page.locator(
               '.el-dialog__headerbtn, .el-dialog__close, div[role="dialog"]'
               " button, [class*='close']"
           ).last
-
           if close_btn.is_visible(timeout=3000):
             close_btn.click(force=True)
             log_print('✅ 成功关闭广告弹窗！')
-            page.wait_for_timeout(1000)
         except Exception:
           pass
-
         return True
       else:
         log_print('⚠️ 验证码识别错误，正在自动刷新验证码重试...')
         captcha_locator.click()
         page.wait_for_timeout(1000)
-
     except Exception as e:
       log_print(f'❌ 登录尝试过程中发生异常: {e}')
       page.wait_for_timeout(1000)
-
   return False
 
 
-def crawl_single_variety(context, date_str, raw_variety, index, total):
+def crawl_single_variety(page, date_str, raw_variety):
+  """单品种串行抓取函数（高稳定、无线程冲突）"""
   v_name = (raw_variety.split('/')[0] if '/' in raw_variety else raw_variety).strip()
   long_rows, short_rows = [], []
-  page = context.new_page()
-  page.set_default_timeout(45000)
 
-  try:
-    for _ in range(3):
+  for _ in range(3):
+    try:
+      encoded_variety = urllib.parse.quote(v_name)
+      target_url = f'https://jiaoyikecha.com/#/variety/position/variety={encoded_variety}/code=all/date={date_str}'
+      safe_goto(page, target_url)
+
       try:
-        encoded_variety = urllib.parse.quote(v_name)
-        target_url = f'https://jiaoyikecha.com/#/variety/position/variety={encoded_variety}/code=all/date={date_str}'
-        safe_goto(page, target_url)
+        close_btn = page.locator(
+            '.el-message-box__close, .el-dialog__headerbtn'
+        ).first
+        if close_btn.is_visible(timeout=800):
+          close_btn.click(force=True)
+      except:
+        pass
 
-        try:
-          close_btn = page.locator(
-              '.el-message-box__close, .el-dialog__headerbtn'
-          ).first
-          if close_btn.is_visible(timeout=800):
-            close_btn.click(force=True)
-        except:
-          pass
-
-        start_time = time.time()
-        while time.time() - start_time < 6:
-          page.wait_for_timeout(400)
-          is_rendered = page.evaluate("""
-                        () => {
-                            const bodyText = document.body.innerText || '';
-                            const tables = document.querySelectorAll('table');
-                            let hasTableWithData = false;
-                            for (let t of tables) {
-                                if (t.querySelectorAll('tr').length > 3) {
-                                    hasTableWithData = true;
-                                    break;
-                                }
-                            }
-                            return (bodyText.includes('多头') || bodyText.includes('空头')) && hasTableWithData;
-                        }
-                    """)
-          if is_rendered:
-            break
-
-        table_data = page.evaluate("""
+      start_time = time.time()
+      while time.time() - start_time < 6:
+        page.wait_for_timeout(400)
+        is_rendered = page.evaluate("""
                     () => {
-                        let longData = [], shortData = [];
+                        const bodyText = document.body.innerText || '';
                         const tables = document.querySelectorAll('table');
-                        tables.forEach((table) => {
-                            let parent = table.parentElement, cardText = "";
-                            for (let i = 0; i < 3; i++) {
-                                if (parent) { cardText += " " + parent.innerText; parent = parent.parentElement; }
+                        let hasTableWithData = false;
+                        for (let t of tables) {
+                            if (t.querySelectorAll('tr').length > 3) {
+                                hasTableWithData = true;
+                                break;
                             }
-                            const rows = Array.from(table.querySelectorAll('tr')).map(tr => 
-                                Array.from(tr.querySelectorAll('th, td')).map(td => td.innerText.trim())
-                            ).filter(cells => cells.length > 0);
-                            if ((cardText.includes('多头') || cardText.includes('多头持仓')) && longData.length === 0 && rows.length > 2) longData = rows;
-                            else if ((cardText.includes('空头') || cardText.includes('空头持仓')) && shortData.length === 0 && rows.length > 2) shortData = rows;
-                        });
-                        if (longData.length === 0 && tables.length > 0) longData = Array.from(tables[0].querySelectorAll('tr')).map(tr => Array.from(tr.querySelectorAll('th, td')).map(td => td.innerText.trim())).filter(c => c.length > 0);
-                        if (shortData.length === 0 && tables.length > 1) shortData = Array.from(tables[1].querySelectorAll('tr')).map(tr => Array.from(tr.querySelectorAll('th, td')).map(td => td.innerText.trim())).filter(c => c.length > 0);
-                        return { long_table: longData, short_table: shortData };
+                        }
+                        return (bodyText.includes('多头') || bodyText.includes('空头')) && hasTableWithData;
                     }
                 """)
-        long_rows, short_rows = table_data.get(
-            'long_table', []
-        ), table_data.get('short_table', [])
-        if len(long_rows) > 2 or len(short_rows) > 2:
+        if is_rendered:
           break
-      except:
-        page.wait_for_timeout(800)
 
-    def clean_rows(rows, is_long=True):
-      lst = []
-      for r in rows:
-        if len(r) >= 2 and r[0] not in ['席位', '持仓', '合计', '']:
-          net_val = r[3] if len(r) > 3 else ''
-          lst.append({
-              '席位/期货公司': r[0],
-              '持仓量': r[1] if len(r) > 1 else '',
-              '增减量': r[2] if len(r) > 2 else '',
-              '净持仓': net_val,
-              'num_val': parse_net_position(net_val),
-          })
-      df = pd.DataFrame(lst)
-      if not df.empty:
-        df = df.sort_values(by='num_val', ascending=is_long).reset_index(
-            drop=True
-        )
-      return df
+      table_data = page.evaluate("""
+                () => {
+                    let longData = [], shortData = [];
+                    const tables = document.querySelectorAll('table');
+                    tables.forEach((table) => {
+                        let parent = table.parentElement, cardText = "";
+                        for (let i = 0; i < 3; i++) {
+                            if (parent) { cardText += " " + parent.innerText; parent = parent.parentElement; }
+                        }
+                        const rows = Array.from(table.querySelectorAll('tr')).map(tr => 
+                            Array.from(tr.querySelectorAll('th, td')).map(td => td.innerText.trim())
+                        ).filter(cells => cells.length > 0);
+                        if ((cardText.includes('多头') || cardText.includes('多头持仓')) && longData.length === 0 && rows.length > 2) longData = rows;
+                        else if ((cardText.includes('空头') || cardText.includes('空头持仓')) && shortData.length === 0 && rows.length > 2) shortData = rows;
+                    });
+                    if (longData.length === 0 && tables.length > 0) longData = Array.from(tables[0].querySelectorAll('tr')).map(tr => Array.from(tr.querySelectorAll('th, td')).map(td => td.innerText.trim())).filter(c => c.length > 0);
+                    if (shortData.length === 0 && tables.length > 1) shortData = Array.from(tables[1].querySelectorAll('tr')).map(tr => Array.from(tr.querySelectorAll('th, td')).map(td => td.innerText.trim())).filter(c => c.length > 0);
+                    return { long_table: longData, short_table: shortData };
+                }
+            """)
+      long_rows, short_rows = table_data.get('long_table', []), table_data.get(
+          'short_table', []
+      )
+      if len(long_rows) > 2 or len(short_rows) > 2:
+        break
+    except:
+      page.wait_for_timeout(800)
 
-    df_long = clean_rows(long_rows, True)
-    df_short = clean_rows(short_rows, False)
-    return raw_variety, {'long': df_long, 'short': df_short}
-  finally:
-    page.close()
+  def clean_rows(rows, is_long=True):
+    lst = []
+    for r in rows:
+      if len(r) >= 2 and r[0] not in ['席位', '持仓', '合计', '']:
+        net_val = r[3] if len(r) > 3 else ''
+        lst.append({
+            '席位/期货公司': r[0],
+            '持仓量': r[1] if len(r) > 1 else '',
+            '增减量': r[2] if len(r) > 2 else '',
+            '净持仓': net_val,
+            'num_val': parse_net_position(net_val),
+        })
+    df = pd.DataFrame(lst)
+    if not df.empty:
+      df = df.sort_values(by='num_val', ascending=is_long).reset_index(drop=True)
+    return df
+
+  df_long = clean_rows(long_rows, True)
+  df_short = clean_rows(short_rows, False)
+  return raw_variety, {'long': df_long, 'short': df_short}
 
 
 def export_excel_for_date(parsed_variety_data, date_str, output_folder):
@@ -426,11 +393,18 @@ def export_excel_for_date(parsed_variety_data, date_str, output_folder):
   group2 = ['方正中期', '东方财富', '平安期货', '徽商期货']
   summary = []
 
+  valid_variety_data = {}
+  for v_name, v_data in parsed_variety_data.items():
+    if not v_data['long'].empty or not v_data['short'].empty:
+      valid_variety_data[v_name] = v_data
+
+  if not valid_variety_data:
+    log_print(f'⚠️ 日期 {date_str} 所有品种均未抓取到有效数据，跳过导出！')
+    return False
+
   with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-    for v_name, v_data in parsed_variety_data.items():
+    for v_name, v_data in valid_variety_data.items():
       df_l, df_s = v_data['long'], v_data['short']
-      if df_l.empty and df_s.empty:
-        continue
 
       t10_l = df_l.head(10)['席位/期货公司'].tolist() if not df_l.empty else []
       t10_s = df_s.head(10)['席位/期货公司'].tolist() if not df_s.empty else []
@@ -457,7 +431,8 @@ def export_excel_for_date(parsed_variety_data, date_str, output_folder):
     if summary:
       pd.DataFrame(summary).to_excel(writer, sheet_name='统计汇总', index=False)
       wb = writer.book
-      wb._sheets.insert(0, wb._sheets.pop(wb.sheetnames.index('统计汇总')))
+      if '统计汇总' in wb.sheetnames:
+        wb._sheets.insert(0, wb._sheets.pop(wb.sheetnames.index('统计汇总')))
 
   # 美化样式
   wb = openpyxl.load_workbook(output_file)
@@ -499,19 +474,18 @@ def export_excel_for_date(parsed_variety_data, date_str, output_folder):
 
   wb.save(output_file)
   log_print(f'✅ 数据文件已生成并美化: {output_file}')
+  return True
 
 
 def main():
   log_print('=' * 60)
   log_print(
-      '🚀 启动期货龙虎榜智能分时接力采集程序 (2023-01-01 至今 + 稳健OCR登录)'
+      '🚀 启动期货龙虎榜智能分时接力采集程序 (高稳定串行版 + 稳健OCR登录)'
   )
   log_print('=' * 60)
 
   script_start_time = time.time()
-  MAX_RUN_SECONDS = (
-      5.5 * 3600
-  )  # 💡 5.5 小时 = 19800 秒（留出半小时安全余量，避免服务器超时中断）
+  MAX_RUN_SECONDS = 5.5 * 3600  # 5.5 小时安全余量
 
   target_dates = get_target_date_range_trade_days('2023-01-01')
   varieties = get_filtered_varieties()
@@ -519,7 +493,7 @@ def main():
   output_folder = 'futures_longhubang_data'
   os.makedirs(output_folder, exist_ok=True)
 
-  # 智能增量过滤：找出本地还没有抓取的日期
+  # 智能增量过滤：找出本地还没有抓取（或抓取文件异常过小）的日期
   pending_dates = []
   for d in target_dates:
     f_path = os.path.join(output_folder, f'全品种期货持仓龙虎榜汇总_{d}.xlsx')
@@ -537,7 +511,6 @@ def main():
 
   username = os.environ.get('USER_PHONE', '18392272125')
   password = os.environ.get('USER_PWD', 'lmn123')
-  MAX_WORKERS = 3
 
   with sync_playwright() as p:
     browser = p.chromium.launch(
@@ -549,23 +522,20 @@ def main():
         ],
     )
     context = browser.new_context(ignore_https_errors=True)
-    login_page = context.new_page()
-    login_page.set_default_timeout(60000)
+    page = context.new_page()
+    page.set_default_timeout(60000)
 
-    # 💡 使用您验证过的高稳健登录和弹窗关闭函数
-    if not auto_login_and_close_ad(login_page, username, password):
+    if not auto_login_and_close_ad(page, username, password):
       log_print('❌ 初始登录失败，退出程序！')
       browser.close()
       return
-    login_page.close()
 
     for idx, date_str in enumerate(pending_dates, 1):
-      # 💡 核心：每处理完一个交易日，检查一次总运行时间是否超过 5.5 小时
       elapsed_time = time.time() - script_start_time
       if elapsed_time > MAX_RUN_SECONDS:
         log_print(
-            '⏰ 【限时保护触发】本次运行已满 5.5 小时，为防止服务器超时强制中断，'
-            '脚本已安全保存当前进度并准备退出。明天下午 16:46 将自动接力继续运行！'
+            '⏰ 【限时保护触发】本次运行已满 5.5 小时，脚本已安全保存当前进度并退出。'
+            '明天下午 16:46 将自动接力继续运行！'
         )
         break
 
@@ -576,31 +546,23 @@ def main():
       parsed_variety_data = {}
       total_v = len(varieties)
 
-      with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {
-            executor.submit(
-                crawl_single_variety,
-                context,
-                date_str,
-                v,
-                i,
-                total_v,
-            ): v
-            for i, v in enumerate(varieties, 1)
-        }
-        for future in as_completed(futures):
-          try:
-            v_name, v_data = future.result()
-            if v_name:
-              parsed_variety_data[v_name] = v_data
-          except Exception as e:
-            log_print(f'❌ 线程异常: {e}')
+      # 串行高稳定抓取当前交易日的所有品种
+      for i, v in enumerate(varieties, 1):
+        try:
+          v_name, v_data = crawl_single_variety(page, date_str, v)
+          if v_name:
+            parsed_variety_data[v_name] = v_data
+            log_print(
+                f'   📊 [{date_str}] 品种 [{i}/{total_v}] {v_name} 抓取成功'
+            )
+        except Exception as e:
+          log_print(f'❌ 品种 {v} 抓取异常: {e}')
 
       export_excel_for_date(parsed_variety_data, date_str, output_folder)
 
     browser.close()
 
-  # 每次单次任务结束前，自动将已抓取的数据同步推送到云端 GitHub 仓库
+  # 自动同步推送到云端 GitHub 仓库
   try:
     subprocess.run(
         ['git', 'config', '--global', 'user.name', 'GitHub Action Bot'],
