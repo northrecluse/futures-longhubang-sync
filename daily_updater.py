@@ -15,7 +15,7 @@ from playwright.sync_api import sync_playwright
 def log_print(msg):
   """带具体时间显示的控制台输出函数"""
   current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-  print(f'[{current_time}] {msg}')
+  print(f'[{current_time}] {msg}', flush=True)
 
 
 def get_target_date_range_trade_days(
@@ -296,7 +296,7 @@ def auto_login_and_close_ad(page, username, password):
 
 
 def crawl_single_variety(page, date_str, raw_variety):
-  """单品种串行抓取函数（高稳定、无线程冲突）"""
+  """单品种串行抓取函数（高稳定、单线程无冲突）"""
   v_name = (raw_variety.split('/')[0] if '/' in raw_variety else raw_variety).strip()
   long_rows, short_rows = [], []
 
@@ -480,7 +480,7 @@ def export_excel_for_date(parsed_variety_data, date_str, output_folder):
 def main():
   log_print('=' * 60)
   log_print(
-      '🚀 启动期货龙虎榜智能分时接力采集程序 (高稳定串行版 + 稳健OCR登录)'
+      '🚀 启动期货龙虎榜智能分时接力采集程序 (高稳定串行单线程版 + 稳健OCR登录)'
   )
   log_print('=' * 60)
 
@@ -546,7 +546,7 @@ def main():
       parsed_variety_data = {}
       total_v = len(varieties)
 
-      # 串行高稳定抓取当前交易日的所有品种
+      # 纯单线程串行抓取当前交易日所有品种，实时输出日志，绝不卡顿
       for i, v in enumerate(varieties, 1):
         try:
           v_name, v_data = crawl_single_variety(page, date_str, v)
