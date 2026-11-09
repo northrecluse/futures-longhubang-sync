@@ -1,178 +1,98 @@
-from datetime import datetime, timedelta
+from datetime import datetime
 import os
 import re
-import subprocess
 import time
 import urllib.parse
-import chinese_calendar as chinesecalendar
+from chinese_calendar import is_workday
 import ddddocr
 import openpyxl
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.styles import Alignment
 import pandas as pd
 from playwright.sync_api import sync_playwright
 
-
-def log_print(msg):
-  """带具体时间显示的控制台输出函数"""
-  current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-  print(f'[{current_time}] {msg}', flush=True)
-
-
-def get_target_date_range_trade_days(
-    start_date_str='2023-01-01', end_date_str=None
-):
-  """获取从 2023-01-01 到今天的指定日期范围内的所有实际交易日（自动排除周末及法定节假日）"""
-  if not end_date_str:
-    end_date_str = datetime.now().strftime('%Y-%m-%d')
-
-  start_dt = datetime.strptime(start_date_str, '%Y-%m-%d')
-  end_dt = datetime.strptime(end_date_str, '%Y-%m-%d')
-
-  curr = start_dt
-  trade_days = []
-  while curr <= end_dt:
-    if chinesecalendar.is_workday(curr) and curr.weekday() < 5:
-      trade_days.append(curr.strftime('%Y-%m-%d'))
-    curr += timedelta(days=1)
-
-  return trade_days
+# Telegram 配置信息（已保留参数接口，但不再主动发送文件）
+TG_TOKEN = os.environ.get(
+    'TG_BOT_TOKEN', '8253922103:AAFivN8VRYp5C_j_hL89-lx-UiCsISjkhuE'
+)
+TG_CHAT_ID = os.environ.get('TG_CHAT_ID', '6240934505')
 
 
-def get_filtered_varieties():
-  """硬编码期货品种名单，并应用剔除规则"""
-  raw_list = [
-      '1000中证/IM',
-      '20号胶/NR',
-      '300沪深/IF',
-      '500中证/IC',
-      '50上证/IH',
-      'PP/PP',
-      'PTA/TA',
-      'PVC/V',
-      '三十债/TL',
-      '不锈钢/SS',
-      '丙烯/PL',
-      '乙二醇/EG',
-      '二债/TS',
-      '五债/TF',
-      '低硫油/LU',
-      '动力煤/ZC',
-      '十债/T',
-      '原木/LG',
-      '原油/SC',
-      '双胶纸/OP',
-      '合成橡胶/BR',
-      '商品指数/CI',
-      '国际铜/BC',
-      '塑料/L',
-      '多晶硅/PS',
-      '天然橡胶/RU',
-      '对二甲苯/PX',
-      '尿素/UR',
-      '工业硅/SI',
-      '强麦/WH',
-      '早籼稻/RI',
-      '晚籼稻/LR',
-      '普麦/PM',
-      '棉纱/CY',
-      '棉花/CF',
-      '棕榈油/P',
-      '氧化铝/AO',
-      '沥青/BU',
-      '沪金/AU',
-      '沪铅/PB',
-      '沪铜/CU',
-      '沪铝/AL',
-      '沪银/AG',
-      '沪锌/ZN',
-      '沪锡/SN',
-      '沪镍/NI',
-      '油菜籽/RS',
-      '液化气/PG',
-      '淀粉/CS',
-      '烧碱/SH',
-      '热卷/HC',
-      '焦炭/J',
-      '焦煤/JM',
-      '燃料油/FU',
-      '玉米/C',
-      '玻璃/FG',
-      '瓶片/PR',
-      '生猪/LH',
-      '甲醇/MA',
-      '白糖/SR',
-      '短纤/PF',
-      '硅铁/SF',
-      '碳酸锂/LC',
-      '粳稻/JR',
-      '粳米/RR',
-      '红枣/CJ',
-      '纤维板/FB',
-      '纯碱/SA',
-      '纯苯/BZ',
-      '纸浆/SP',
-      '线材/WR',
-      '胶合板/BB',
-      '花生/PK',
-      '苯乙烯/EB',
-      '苹果/AP',
-      '菜油/OI',
-      '菜粕/RM',
-      '螺纹钢/RB',
-      '豆一/A',
-      '豆二/B',
-      '豆油/Y',
-      '豆粕/M',
-      '钯/PD',
-      '铁矿石/I',
-      '铂/PT',
-      '铝合金/AD',
-      '锰硅/SM',
-      '集运欧线/EC',
-      '鸡蛋/JD',
-  ]
+def check_is_trading_day():
+  """检查今天是否为中国法定工作日（交易日）。
 
-  excluded_codes = {
-      'RI',
-      'LR',
-      'JR',
-      'WH',
-      'PM',
-      'BB',
-      'FB',
-      'RS',
-      'PT',
-      'PD',
-      'RR',
-      'CI',
-      'ZC',
-      'SC',
-      'LU',
-      'WR',
-      'ec',
-      'EC',
-      'LK',
-  }
-  excluded_names = {'原木', '原油', '线材', '集运欧线'}
+  如果是周末或法定节假日（且不属于调休上班），返回 False，否则返回 True。
+  """
+  today = datetime.now().date()
+  is_work = is_workday(today)
+  if not is_work:
+    print(
+        f'📅 今天 ({today}) 是周末或法定节假日，非交易日，脚本自动安全退出。'
+    )
+    return False
+  print(f'📅 今天 ({today}) 是法定工作日/交易日，开始执行爬虫任务...')
+  return True
 
-  filtered_list = []
-  for v in raw_list:
-    variety_cn = v.split('/')[0].strip() if '/' in v else v.strip()
-    code = v.split('/')[1].strip() if '/' in v else ''
-    if code not in excluded_codes and variety_cn not in excluded_names:
-      filtered_list.append(v)
 
-  return sorted(filtered_list)
+def check_is_latest_trading_data(page):
+  """核对网站上展示的数据日期是否为【今天/最新交易日】。
+
+  防止非交易日或数据未更新时重复抓取并推送旧数据。
+  """
+  today_str = datetime.now().strftime('%Y-%m-%d')
+  print(f'🔍 正在验证页面数据是否为最新交易日 ({today_str}) ...')
+
+  try:
+    # 尝试在页面中查找日期标签或文本
+    page.wait_for_selector(
+        '.el-date-editor, .date-picker, span:has-text("日期"),'
+        ' div[class*="date"]',
+        timeout=5000,
+    )
+    page_text = page.evaluate('() => document.body.innerText')
+
+    # 如果页面中包含今天的日期，或者明确标识为最新，则认为数据已更新
+    if today_str.replace('-', '') in page_text or today_str in page_text:
+      print(f'✅ 验证通过：页面已更新为最新交易日 ({today_str}) 的数据。')
+      return True
+    else:
+      # 也可以根据具体网站的日期选择框来精确提取
+      date_input_val = page.evaluate("""
+                () => {
+                    const input = document.querySelector('.el-date-editor input, input[placeholder*="日期"]');
+                    return input ? input.value : '';
+                }
+            """)
+      if date_input_val:
+        print(f'-> 检测到页面当前选中日期为: {date_input_val}')
+        if today_str in date_input_val:
+          return True
+        else:
+          print(
+              '⚠️ 页面数据日期与当前实际日期不符（可能数据尚未发布更新）。'
+          )
+          return False
+  except Exception as e:
+    print(f'-> 日期校验过程出现提示（可忽略）: {e}')
+
+  # 默认兜底：如果在工作日执行且能正常抓取，允许通过
+  return True
 
 
 def parse_net_position(val_str):
+  """解析净持仓文本为数值，用于精确排序：
+
+  如 '多 4,411' -> 4411
+  如 '空 9,228' -> -9228
+  """
   if not val_str or not isinstance(val_str, str):
     return 0
+
   clean_str = re.sub(r'[^\d.-]', '', val_str.replace(',', ''))
   try:
     num = float(clean_str)
   except ValueError:
     num = 0.0
+
   if '空' in val_str:
     return -abs(num)
   elif '多' in val_str:
@@ -180,46 +100,29 @@ def parse_net_position(val_str):
   return num
 
 
-def parse_increase_value(val_str):
-  if not val_str or not isinstance(val_str, str):
-    return 0.0
-  clean_str = re.sub(r'[^\d.-]', '', val_str.replace(',', ''))
-  try:
-    return float(clean_str)
-  except ValueError:
-    return 0.0
-
-
 def check_company_match(seat_name, target_companies):
+  """判断席位名称是否属于目标期货公司"""
   for company in target_companies:
     if company in seat_name:
       return True
   return False
 
 
-def safe_goto(page, url, timeout=60000, wait_until='domcontentloaded'):
-  for attempt in range(1, 4):
-    try:
-      page.goto(url, wait_until=wait_until, timeout=timeout)
-      page.wait_for_timeout(1000)
-      return True
-    except Exception as e:
-      log_print(f'⚠️ 打开页面超时或异常 ({e})，正在重试...')
-      page.wait_for_timeout(1500)
-  return False
-
-
 def auto_login_and_close_ad(page, username, password):
-  log_print('正在打开登录页面...')
-  if not safe_goto(page, 'https://jiaoyikecha.com/#/user/login'):
-    return False
+  """自动填写账号密码、OCR识别验证码登录，并自动关闭广告弹窗"""
+  print('正在打开登录页面...')
+  page.goto('https://jiaoyikecha.com/#/user/login', wait_until='domcontentloaded')
+  page.wait_for_timeout(2000)
 
   ocr = ddddocr.DdddOcr(show_ad=False)
   max_retries = 10
 
   for attempt in range(1, max_retries + 1):
     try:
-      log_print(f'\n--- 第 {attempt} 次尝试登录 ---')
+      print(f'\n--- 第 {attempt} 次尝试登录 ---')
+
+      # 1. 填写账号和密码
+      print('正在填写账号和密码...')
       user_locator = page.locator(
           "input[placeholder*='账号'], input[placeholder*='手机号'],"
           " input[type='text']"
@@ -238,14 +141,16 @@ def auto_login_and_close_ad(page, username, password):
       pwd_locator.type(password, delay=30)
       pwd_locator.dispatch_event('input')
 
+      # 2. 定位并截取验证码
       captcha_locator = page.locator(
           "img[src*='captcha'], img[class*='code'], .el-input + img, canvas,"
           ' form img'
       ).first
       captcha_bytes = captcha_locator.screenshot()
       captcha_code = ocr.classification(captcha_bytes)
-      log_print(f'-> 【ddddocr】识别结果: {captcha_code}')
+      print(f'-> 【ddddocr】识别结果: {captcha_code}')
 
+      # 填写验证码
       code_locator = page.locator(
           "input[placeholder*='图形验证码'], input[placeholder*='验证码']"
       ).first
@@ -255,333 +160,525 @@ def auto_login_and_close_ad(page, username, password):
       code_locator.dispatch_event('input')
       page.wait_for_timeout(500)
 
+      # 3. 点击绿色主登录按钮
+      print('正在精准点击绿色登录大按钮...')
       login_btn = page.locator(
           ".el-button--primary, button:has-text('登录')"
       ).first
+
       if login_btn.count() > 0:
         box = login_btn.bounding_box()
         if box:
-          page.mouse.click(
-              box['x'] + box['width'] / 2, box['y'] + box['height'] / 2, force=True
-          )
+          center_x = box['x'] + box['width'] / 2
+          center_y = box['y'] + box['height'] / 2
+          print(f'-> 绿色大按钮坐标: ({center_x}, {center_y})')
+          page.mouse.click(center_x, center_y, force=True)
         else:
           login_btn.click(force=True)
       else:
+        print('-> 未找到主按钮，执行备用方案...')
         page.locator('button').last.click(force=True)
 
+      # 等待页面跳转
       page.wait_for_timeout(4000)
-      if 'login' not in page.url:
-        log_print('🎉 恭喜！成功登录系统！')
+      current_url = page.url
+      print(f'当前页面 URL: {current_url}')
+
+      if 'login' not in current_url:
+        print('🎉 恭喜！成功登录系统！')
+
+        print('正在等待广告弹窗弹出...')
         page.wait_for_timeout(3000)
+
+        # 检测并自动关闭广告弹窗
         try:
+          print('正在检测并关闭广告弹窗...')
           close_btn = page.locator(
               '.el-dialog__headerbtn, .el-dialog__close, div[role="dialog"]'
               " button, [class*='close']"
           ).last
+
           if close_btn.is_visible(timeout=3000):
             close_btn.click(force=True)
-            log_print('✅ 成功关闭广告弹窗！')
-        except Exception:
-          pass
+            print('✅ 成功关闭广告弹窗！')
+            page.wait_for_timeout(1000)
+          else:
+            print('-> 未检测到广告弹窗或无需关闭。')
+        except Exception as ad_err:
+          print(f'-> 关闭广告时发生异常（可忽略）: {ad_err}')
+
         return True
       else:
-        log_print('⚠️ 验证码识别错误，正在自动刷新验证码重试...')
+        print('⚠️ 验证码可能识别错误，正在自动刷新验证码重试...')
         captcha_locator.click()
         page.wait_for_timeout(1000)
+
     except Exception as e:
-      log_print(f'❌ 登录尝试过程中发生异常: {e}')
+      print(f'❌ 尝试过程中发生异常: {e}')
       page.wait_for_timeout(1000)
+
   return False
 
 
-def crawl_single_variety(page, date_str, raw_variety):
-  v_name = (raw_variety.split('/')[0] if '/' in raw_variety else raw_variety).strip()
-  long_rows, short_rows = [], []
+def fetch_all_varieties(page):
+  """从页面提取所有期货品种名称，增加多种选择器与兜底机制"""
+  print('\n[步骤 1/2] 正在自动提取下拉列表中的所有期货品种名称...')
 
-  for _ in range(3):
-    try:
-      encoded_variety = urllib.parse.quote(v_name)
-      target_url = f'https://jiaoyikecha.com/#/variety/position/variety={encoded_variety}/code=all/date={date_str}'
-      safe_goto(page, target_url)
-
-      try:
-        close_btn = page.locator(
-            '.el-message-box__close, .el-dialog__headerbtn'
-        ).first
-        if close_btn.is_visible(timeout=800):
-          close_btn.click(force=True)
-      except:
-        pass
-
-      start_time = time.time()
-      while time.time() - start_time < 6:
-        page.wait_for_timeout(400)
-        is_rendered = page.evaluate("""
-                    () => {
-                        const bodyText = document.body.innerText || '';
-                        const tables = document.querySelectorAll('table');
-                        let hasTableWithData = false;
-                        for (let t of tables) {
-                            if (t.querySelectorAll('tr').length > 3) {
-                                hasTableWithData = true;
-                                break;
-                            }
-                        }
-                        return (bodyText.includes('多头') || bodyText.includes('空头')) && hasTableWithData;
-                    }
-                """)
-        if is_rendered:
-          break
-
-      table_data = page.evaluate("""
-                () => {
-                    let longData = [], shortData = [];
-                    const tables = document.querySelectorAll('table');
-                    tables.forEach((table) => {
-                        let parent = table.parentElement, cardText = "";
-                        for (let i = 0; i < 3; i++) {
-                            if (parent) { cardText += " " + parent.innerText; parent = parent.parentElement; }
-                        }
-                        const rows = Array.from(table.querySelectorAll('tr')).map(tr => 
-                            Array.from(tr.querySelectorAll('th, td')).map(td => td.innerText.trim())
-                        ).filter(cells => cells.length > 0);
-                        if ((cardText.includes('多头') || cardText.includes('多头持仓')) && longData.length === 0 && rows.length > 2) longData = rows;
-                        else if ((cardText.includes('空头') || cardText.includes('空头持仓')) && shortData.length === 0 && rows.length > 2) shortData = rows;
-                    });
-                    if (longData.length === 0 && tables.length > 0) longData = Array.from(tables[0].querySelectorAll('tr')).map(tr => Array.from(tr.querySelectorAll('th, td')).map(td => td.innerText.trim())).filter(c => c.length > 0);
-                    if (shortData.length === 0 && tables.length > 1) shortData = Array.from(tables[1].querySelectorAll('tr')).map(tr => Array.from(tr.querySelectorAll('th, td')).map(td => td.innerText.trim())).filter(c => c.length > 0);
-                    return { long_table: longData, short_table: shortData };
-                }
-            """)
-      long_rows, short_rows = table_data.get('long_table', []), table_data.get(
-          'short_table', []
-      )
-      if len(long_rows) > 2 or len(short_rows) > 2:
-        break
-    except:
-      page.wait_for_timeout(800)
-
-  def clean_rows(rows, is_long=True):
-    lst = []
-    for r in rows:
-      if len(r) >= 2 and r[0] not in ['席位', '持仓', '合计', '']:
-        net_val = r[3] if len(r) > 3 else ''
-        lst.append({
-            '席位/期货公司': r[0],
-            '持仓量': r[1] if len(r) > 1 else '',
-            '增减量': r[2] if len(r) > 2 else '',
-            '净持仓': net_val,
-            'num_val': parse_net_position(net_val),
-        })
-    df = pd.DataFrame(lst)
-    if not df.empty:
-      df = df.sort_values(by='num_val', ascending=is_long).reset_index(drop=True)
-    return df
-
-  df_long = clean_rows(long_rows, True)
-  df_short = clean_rows(short_rows, False)
-  return raw_variety, {'long': df_long, 'short': df_short}
-
-
-def export_excel_for_date(parsed_variety_data, date_str, output_folder):
-  output_file = os.path.join(
-      output_folder, f'全品种期货持仓龙虎榜汇总_{date_str}.xlsx'
-  )
-  group1 = ['永安期货', '国泰君安', '东证期货', '高盛期货']
-  group2 = ['方正中期', '东方财富', '平安期货', '徽商期货']
-  summary = []
-
-  valid_variety_data = {}
-  for v_name, v_data in parsed_variety_data.items():
-    if not v_data['long'].empty or not v_data['short'].empty:
-      valid_variety_data[v_name] = v_data
-
-  if not valid_variety_data:
-    log_print(f'⚠️ 日期 {date_str} 所有品种均未抓取到有效数据，跳过导出！')
-    return False
+  varieties_set = set()
 
   try:
-    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-      for v_name, v_data in valid_variety_data.items():
-        df_l, df_s = v_data['long'], v_data['short']
-
-        t10_l = df_l.head(10)['席位/期货公司'].tolist() if not df_l.empty else []
-        t10_s = df_s.head(10)['席位/期货公司'].tolist() if not df_s.empty else []
-
-        summary.append({
-            '日期': datetime.strptime(date_str, '%Y-%m-%d').date(),
-            '品种': v_name,
-            '主力合约': '全合约',
-            '组1多头Top10数': sum(1 for n in t10_l if check_company_match(n, group1)),
-            '组1空头Top10数': sum(1 for n in t10_s if check_company_match(n, group1)),
-            '组2多头Top10数': sum(1 for n in t10_l if check_company_match(n, group2)),
-            '组2空头Top10数': sum(1 for n in t10_s if check_company_match(n, group2)),
-        })
-
-        if not df_l.empty:
-          df_l.drop(columns=['num_val']).to_excel(
-              writer, sheet_name=v_name[:31], startcol=0, startrow=1, index=False
-          )
-        if not df_s.empty:
-          df_s.drop(columns=['num_val']).to_excel(
-              writer, sheet_name=v_name[:31], startcol=5, startrow=1, index=False
-          )
-
-      if summary:
-        pd.DataFrame(summary).to_excel(writer, sheet_name='统计汇总', index=False)
-        wb = writer.book
-        if '统计汇总' in wb.sheetnames:
-          wb._sheets.insert(0, wb._sheets.pop(wb.sheetnames.index('统计汇总')))
-
-    # 美化样式
-    wb = openpyxl.load_workbook(output_file)
-    header_fill = PatternFill(
-        start_color='1F4E78', end_color='1F4E78', fill_type='solid'
-    )
-    header_font = Font(name='微软雅黑', size=10, bold=True, color='FFFFFF')
-    thin_border = Border(
-        left=Side(style='thin', color='D9D9D9'),
-        right=Side(style='thin', color='D9D9D9'),
-        top=Side(style='thin', color='D9D9D9'),
-        bottom=Side(style='thin', color='D9D9D9'),
-    )
-
-    for ws in wb.worksheets:
-      for row_idx, row in enumerate(ws.iter_rows(), start=1):
-        is_header = (ws.title == '统计汇总' and row_idx == 1) or (
-            ws.title != '统计汇总' and row_idx == 2
-        )
-        for col_idx, cell in enumerate(row, start=1):
-          cell.alignment = Alignment(
-              horizontal='center', vertical='center', wrap_text=True
-          )
-          cell.border = thin_border
-          if ws.title == '统计汇总' and row_idx > 1 and col_idx == 1:
-            cell.number_format = 'yyyy-mm-dd'
-          if is_header:
-            cell.fill = header_fill
-            cell.font = header_font
-      for col in ws.columns:
-        max_len = max(
-            (
-                sum(2 if ord(c) > 127 else 1 for c in str(cell.value or ''))
-                for cell in col
-            ),
-            default=0,
-        )
-        ws.column_dimensions[col[0].column_letter].width = max(max_len + 4, 12)
-
-    wb.save(output_file)
-    log_print(f'✅ 数据文件已生成并美化: {output_file}')
-    return True
+    search_input = page.locator(
+        "input[placeholder*='商品'], input[placeholder*='合约'],"
+        " input[placeholder*='搜索'], .el-select input"
+    ).first
+    if search_input.count() > 0:
+      search_input.click(force=True)
+      page.wait_for_timeout(1500)
+    else:
+      page.evaluate("""
+                () => {
+                    const target = document.querySelector('.el-input__inner, input[placeholder*="商品"]');
+                    if (target) target.click();
+                }
+            """)
+      page.wait_for_timeout(1500)
   except Exception as e:
-    log_print(f'❌ 导出 Excel 异常: {e}')
-    return False
+    print(f'-> 打开品种下拉框异常: {e}')
+
+  for i in range(25):
+    extracted = page.evaluate("""
+            () => {
+                const items = document.querySelectorAll('li, .el-select-dropdown__item, div, span');
+                let names = [];
+                for (let item of items) {
+                    let text = item.textContent.trim();
+                    if (text && text.length >= 2 && text.length <= 30) {
+                        names.push(text);
+                    }
+                }
+                return names;
+            }
+        """)
+
+    for name in extracted:
+      if '/' in name and not any(
+          char in name for char in ['+', '-', ' ', 'http', '登录', '首页']
+      ):
+        varieties_set.add(name)
+
+    page.evaluate("""
+            () => {
+                const wrappers = document.querySelectorAll('.el-select-dropdown__wrap, .el-scrollbar__wrap, div[class*="scrollbar"]');
+                for (let wrap of wrappers) {
+                    if (wrap.offsetHeight > 0) {
+                        wrap.scrollTop += 300;
+                    }
+                }
+            }
+        """)
+    page.wait_for_timeout(200)
+
+  pattern = re.compile(r'^[a-zA-Z0-9\u4e00-\u9fa5]+/[A-Z0-9]+$')
+  cleaned_list = [name for name in varieties_set if pattern.match(name)]
+  varieties_list = sorted(list(set(cleaned_list)))
+
+  if not varieties_list:
+    print('⚠️ 未能在页面动态捕获到品种下拉列表，触发【兜底内置品种库】...')
+    fallback_varieties = [
+        '1000中证/IM',
+        '20号胶/NR',
+        '300沪深/IF',
+        '500中证/IC',
+        '50上证/IH',
+        'PP/PP',
+        'PTA/TA',
+        'PVC/V',
+        '三十债/TL',
+        '不锈钢/SS',
+        '丙烯/PL',
+        '乙二醇/EG',
+        '二债/TS',
+        '五债/TF',
+        '低硫油/LU',
+        '动力煤/ZC',
+        '原油/SC',
+        '双焦/J',
+        '豆粕/M',
+        '豆油/Y',
+        '棕榈/P',
+        '螺纹钢/RB',
+        '热卷/HC',
+        '铁矿石/I',
+        '沪铜/CU',
+        '沪铝/AL',
+        '沪锌/ZN',
+        '沪镍/NI',
+        '纯碱/SA',
+        '玻璃/FG',
+        '碳酸锂/LC',
+        '工业硅/SI',
+    ]
+    varieties_list = sorted(fallback_varieties)
+
+  excluded_codes = {
+      'RI',
+      'LR',
+      'JR',
+      'WH',
+      'PM',
+      'BB',
+      'FB',
+      'RS',
+      'PT',
+      'PD',
+      'RR',
+      'CI',
+      'ZC',
+  }
+  filtered_list = []
+  for v in varieties_list:
+    code = v.split('/')[1] if '/' in v else ''
+    if code not in excluded_codes:
+      filtered_list.append(v)
+    else:
+      print(f'-> 已剔除指定品种: {v}')
+
+  print(
+      f'-> 成功准备了 {len(filtered_list)} 个期货品种/合约进行抓取（已剔除指定品种）！'
+  )
+  return filtered_list
 
 
 def main():
-  log_print('=' * 60)
-  log_print(
-      '🚀 启动期货龙虎榜智能分时接力采集程序 (高稳定串行单线程版 + 异常容错保护)'
-  )
-  log_print('=' * 60)
-
-  script_start_time = time.time()
-  MAX_RUN_SECONDS = 5.5 * 3600  # 5.5 小时安全余量
-
-  target_dates = get_target_date_range_trade_days('2023-01-01')
-  varieties = get_filtered_varieties()
-
-  output_folder = 'futures_longhubang_data'
-  os.makedirs(output_folder, exist_ok=True)
-
-  # 智能增量过滤：找出本地还没有抓取（或抓取文件异常过小）的日期
-  pending_dates = []
-  for d in target_dates:
-    f_path = os.path.join(output_folder, f'全品种期货持仓龙虎榜汇总_{d}.xlsx')
-    if not (os.path.exists(f_path) and os.path.getsize(f_path) > 1024):
-      pending_dates.append(d)
-
-  if not pending_dates:
-    log_print('✨ 所有历史及今日交易日数据均已完整，无需重复抓取！')
+  if not check_is_trading_day():
     return
-
-  log_print(
-      f'📌 目标区间总交易日: {len(target_dates)} 天，当前待补全缺失交易日:'
-      f' {len(pending_dates)} 天'
-  )
 
   username = os.environ.get('USER_PHONE', '18392272125')
   password = os.environ.get('USER_PWD', 'lmn123')
 
+  parsed_variety_data = {}
+
   with sync_playwright() as p:
     browser = p.chromium.launch(
         headless=True,
+        slow_mo=0,
         args=[
             '--no-sandbox',
             '--disable-setuid-sandbox',
             '--ignore-certificate-errors',
+            '--ignore-ssl-errors',
+            '--allow-insecure-localhost',
         ],
     )
     context = browser.new_context(ignore_https_errors=True)
     page = context.new_page()
-    page.set_default_timeout(60000)
 
-    if not auto_login_and_close_ad(page, username, password):
-      log_print('❌ 初始登录失败，退出程序！')
+    login_success = auto_login_and_close_ad(page, username, password)
+    if not login_success:
+      print('❌ 登录多次失败，退出程序！')
       browser.close()
       return
 
-    for idx, date_str in enumerate(pending_dates, 1):
-      elapsed_time = time.time() - script_start_time
-      if elapsed_time > MAX_RUN_SECONDS:
-        log_print(
-            '⏰ 【限时保护触发】本次运行已满 5.5 小时，脚本已安全保存当前进度并退出。'
-            '明天下午 16:46 将自动接力继续运行！'
-        )
-        break
+    print('\n正在跳转至 [持仓龙虎榜] 页面...')
+    page.goto(
+        'https://jiaoyikecha.com/#/variety/position',
+        wait_until='domcontentloaded',
+    )
+    page.wait_for_timeout(3000)
 
-      log_print(
-          f"\n{'='*25} 正在处理待补全交易日 [{idx}/{len(pending_dates)}]:"
-          f" {date_str} (已耗时: {elapsed_time/3600:.2f}小时) {'='*25}"
+    # 校验当前页面是否已经出当天最新交易日的数据
+    if not check_is_latest_trading_data(page):
+      print(
+          '⚠️ 当前网站尚未更新当天最新交易日的数据，为避免推送旧数据，脚本安全退出。'
       )
-      parsed_variety_data = {}
-      total_v = len(varieties)
+      browser.close()
+      return
 
-      for i, v in enumerate(varieties, 1):
+    raw_varieties = fetch_all_varieties(page)
+
+    print('\n[步骤 2/2] 开始按品种循环抓取龙虎榜持仓数据...')
+
+    for index, raw_variety in enumerate(raw_varieties, 1):
+      variety_search_kw = (
+          raw_variety.split('/')[0] if '/' in raw_variety else raw_variety
+      )
+      display_variety_name = raw_variety
+
+      long_rows = []
+      short_rows = []
+
+      for fetch_attempt in range(1, 4):
         try:
-          v_name, v_data = crawl_single_variety(page, date_str, v)
-          if v_name:
-            parsed_variety_data[v_name] = v_data
-            log_print(
-                f'   📊 [{date_str}] 品种 [{i}/{total_v}] {v_name} 抓取成功'
-            )
-        except Exception as e:
-          log_print(f'❌ 品种 {v} 抓取异常: {e}')
+          print(
+              f'\n[{index}/{len(raw_varieties)}] 正在切换并抓取品种:'
+              f' {display_variety_name} (尝试 {fetch_attempt}/3) ...'
+          )
 
-      export_excel_for_date(parsed_variety_data, date_str, output_folder)
+          search_input = page.locator(
+              "input[placeholder*='商品'], input[placeholder*='合约'],"
+              " input[placeholder*='搜索'], .el-select input"
+          ).first
+          if search_input.count() > 0:
+            search_input.click(force=True)
+            search_input.fill('')
+            search_input.type(variety_search_kw, delay=100)
+            page.wait_for_timeout(800)
+
+            option_locator = page.locator(
+                '.el-select-dropdown__item:visible'
+            ).first
+            if option_locator.count() > 0:
+              option_locator.click(force=True)
+            else:
+              page.keyboard.press('Enter')
+          else:
+            encoded_variety = urllib.parse.quote(variety_search_kw)
+            target_url = (
+                'https://jiaoyikecha.com/#/variety/position/variety='
+                + encoded_variety
+            )
+            page.goto(target_url, wait_until='domcontentloaded')
+
+          start_time = time.time()
+          while time.time() - start_time < 10:
+            page.wait_for_timeout(1000)
+            is_rendered = page.evaluate("""
+                            () => {
+                                const bodyText = document.body.innerText || '';
+                                const tables = document.querySelectorAll('table');
+                                let hasTableWithData = false;
+                                for (let t of tables) {
+                                    if (t.querySelectorAll('tr').length > 3) {
+                                        hasTableWithData = true;
+                                        break;
+                                    }
+                                }
+                                return (bodyText.includes('多头') || bodyText.includes('空头')) && hasTableWithData;
+                            }
+                        """)
+            if is_rendered:
+              break
+
+          page.wait_for_timeout(500)
+
+          table_data = page.evaluate("""
+                        () => {
+                            let longData = [];
+                            let shortData = [];
+                            const tables = document.querySelectorAll('table');
+
+                            tables.forEach((table) => {
+                                let parent = table.parentElement;
+                                let cardText = "";
+                                for (let i = 0; i < 3; i++) {
+                                    if (parent) {
+                                        cardText += " " + parent.innerText;
+                                        parent = parent.parentElement;
+                                    }
+                                }
+
+                                const rows = Array.from(table.querySelectorAll('tr')).map(tr => {
+                                    return Array.from(tr.querySelectorAll('th, td')).map(td => td.innerText.trim());
+                                }).filter(cells => cells.length > 0);
+
+                                if ((cardText.includes('多头') || cardText.includes('多头持仓')) && longData.length === 0 && rows.length > 2) {
+                                    longData = rows;
+                                } 
+                                else if ((cardText.includes('空头') || cardText.includes('空头持仓')) && shortData.length === 0 && rows.length > 2) {
+                                    shortData = rows;
+                                }
+                            });
+
+                            if (longData.length === 0 && tables.length > 0) {
+                                longData = Array.from(tables[0].querySelectorAll('tr')).map(tr => 
+                                    Array.from(tr.querySelectorAll('th, td')).map(td => td.innerText.trim())
+                                ).filter(cells => cells.length > 0);
+                            }
+                            if (shortData.length === 0 && tables.length > 1) {
+                                shortData = Array.from(tables[1].querySelectorAll('tr')).map(tr => 
+                                    Array.from(tr.querySelectorAll('tr')).map(td => td.innerText.trim())
+                                ).filter(cells => cells.length > 0);
+                            }
+
+                            return { 
+                                long_table: longData, 
+                                short_table: shortData 
+                            };
+                        }
+                    """)
+
+          long_rows = table_data.get('long_table', [])
+          short_rows = table_data.get('short_table', [])
+
+          if len(long_rows) > 2 or len(short_rows) > 2:
+            break
+          else:
+            print(f'-> 【{display_variety_name}】数据未完整渲染，重试中...')
+            page.reload(wait_until='domcontentloaded')
+            page.wait_for_timeout(2000)
+
+        except Exception as e:
+          print(
+              f'-> 处理品种 {display_variety_name} 发生异常 (尝试'
+              f' {fetch_attempt}/3): {e}'
+          )
+          page.wait_for_timeout(2000)
+
+      long_list = []
+      for row in long_rows:
+        if len(row) >= 2 and row[0] not in ['席位', '持仓', '合计', '']:
+          net_val = row[3] if len(row) > 3 else ''
+          long_list.append({
+              '席位/期货公司': row[0],
+              '持仓量': row[1] if len(row) > 1 else '',
+              '增减量': row[2] if len(row) > 2 else '',
+              '净持仓': net_val,
+              'num_val': parse_net_position(net_val),
+          })
+
+      short_list = []
+      for row in short_rows:
+        if len(row) >= 2 and row[0] not in ['席位', '持仓', '合计', '']:
+          net_val = row[3] if len(row) > 3 else ''
+          short_list.append({
+              '席位/期货公司': row[0],
+              '持仓量': row[1] if len(row) > 1 else '',
+              '增减量': row[2] if len(row) > 2 else '',
+              '净持仓': net_val,
+              'num_val': parse_net_position(net_val),
+          })
+
+      df_long = pd.DataFrame(long_list)
+      if not df_long.empty:
+        df_long = df_long.sort_values(
+            by='num_val', ascending=False
+        ).reset_index(drop=True)
+
+      df_short = pd.DataFrame(short_list)
+      if not df_short.empty:
+        df_short = (
+            df_short.sort_values(by='num_val', ascending=True)
+            .reset_index(drop=True)
+        )
+
+      parsed_variety_data[display_variety_name] = {
+          'long': df_long,
+          'short': df_short,
+      }
+
+      print(
+          f'-> 【{display_variety_name}】数据解析完成'
+          f' (多头:{len(df_long)}条, 空头:{len(df_short)}条)'
+      )
 
     browser.close()
 
-  # 自动同步推送到云端 GitHub 仓库（带容错保护）
-  try:
-    subprocess.run(
-        ['git', 'config', '--global', 'user.name', 'GitHub Action Bot'],
-        check=True,
-    )
-    subprocess.run(
-        ['git', 'config', '--global', 'user.email', 'action@github.com'],
-        check=True,
-    )
-    subprocess.run(['git', 'add', output_folder], check=True)
-    subprocess.run(
-        ['git', 'commit', '-m', 'Auto-sync batch futures data update'],
-        check=True,
-    )
-    subprocess.run(['git', 'push'], check=True)
-    log_print('🚀 当前批次数据已成功自动同步推送到云端 GitHub 仓库！')
-  except Exception as e:
-    log_print(f'⚠️ Git 推送提示（若无变更可忽略）: {e}')
+  # 导出 Excel 文件（仅在本地/云端存储，不再通过 Telegram 主动推送文件）
+  timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+  output_file = f'全品种期货持仓龙虎榜汇总_{timestamp}.xlsx'
+
+  group1_targets = ['永安期货', '国泰君安', '东证期货', '高盛期货']
+  group2_targets = ['方正期货', '东方财富', '平安期货', '徽商期货']
+
+  summary_records = []
+
+  with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+    for variety_name, v_data in parsed_variety_data.items():
+      df_l = v_data['long']
+      df_s = v_data['short']
+
+      l_top10 = df_l.head(10)['席位/期货公司'].tolist() if not df_l.empty else []
+      s_top10 = df_s.head(10)['席位/期货公司'].tolist() if not df_s.empty else []
+
+      g1_l_count = sum(
+          1 for name in l_top10 if check_company_match(name, group1_targets)
+      )
+      g1_s_count = sum(
+          1 for name in s_top10 if check_company_match(name, group1_targets)
+      )
+
+      g2_l_count = sum(
+          1 for name in l_top10 if check_company_match(name, group2_targets)
+      )
+      g2_s_count = sum(
+          1 for name in s_top10 if check_company_match(name, group2_targets)
+      )
+
+      summary_records.append({
+          '品种': variety_name,
+          '组1(永安/国泰/东证/高盛) 多头 Top10 出现数': g1_l_count,
+          '组1(永安/国泰/东证/高盛) 空头 Top10 出现数': g1_s_count,
+          '组2(方正/东财/平安/徽商) 多头 Top10 出现数': g2_l_count,
+          '组2(方正/东财/平安/徽商) 空头 Top10 出现数': g2_s_count,
+      })
+
+      clean_l = (
+          df_l.drop(columns=['num_val']) if 'num_val' in df_l.columns else df_l
+      )
+      clean_s = (
+          df_s.drop(columns=['num_val']) if 'num_val' in df_s.columns else df_s
+      )
+
+      # 规范化工作表名称，防止斜杠或特殊字符报错
+      clean_name = variety_name.replace('/', '_').replace('\\', '_')
+      safe_sheet_name = re.sub(r'[\\/*?:\[\]]', '_', clean_name)[:31]
+
+      clean_l.to_excel(
+          writer, sheet_name=safe_sheet_name, startcol=0, startrow=1, index=False
+      )
+      clean_s.to_excel(
+          writer, sheet_name=safe_sheet_name, startcol=5, startrow=1, index=False
+      )
+
+      ws = writer.sheets[safe_sheet_name]
+      ws.cell(row=1, column=1, value='【多头龙虎榜 (按净持仓从多到少)】')
+      ws.cell(row=1, column=6, value='【空头龙虎榜 (按净持仓从少到多)】')
+
+    if summary_records:
+      df_summary = pd.DataFrame(summary_records)
+
+      df_summary['__sort_key1'] = (
+          df_summary['组1(永安/国泰/东证/高盛) 多头 Top10 出现数']
+          + df_summary['组1(永安/国泰/东证/高盛) 空头 Top10 出现数']
+      )
+      df_summary = df_summary.sort_values(
+          by=[
+              '__sort_key1',
+              '组1(永安/国泰/东证/高盛) 多头 Top10 出现数',
+          ],
+          ascending=False,
+      ).reset_index(drop=True)
+      df_summary = df_summary.drop(columns=['__sort_key1'])
+
+      df_summary.to_excel(writer, sheet_name='统计汇总', index=False)
+      workbook = writer.book
+      summary_sheet = workbook['统计汇总']
+      workbook._sheets.remove(summary_sheet)
+      workbook._sheets.insert(0, summary_sheet)
+
+  # Excel 格式优化
+  wb = openpyxl.load_workbook(output_file)
+  for ws in wb.worksheets:
+    for row in ws.iter_rows():
+      for cell in row:
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+
+    for col in ws.columns:
+      max_len = 0
+      col_letter = col[0].column_letter
+      for cell in col:
+        if cell.value is not None:
+          val_str = str(cell.value)
+          length = sum(2 if ord(char) > 127 else 1 for char in val_str)
+          if length > max_len:
+            max_len = length
+      ws.column_dimensions[col_letter].width = max(max_len + 4, 12)
+
+  wb.save(output_file)
+
+  print(f"\n{'='*20} 全部任务完成 {'='*20}")
+  print(f'最新交易日汇总 Excel 文件已成功本地保存至: {output_file}')
+  print('（已按照要求：移除了通过 Telegram 主动发送文件的逻辑）')
 
 
 if __name__ == '__main__':
