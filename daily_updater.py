@@ -418,13 +418,28 @@ def export_excel_for_date(parsed_variety_data, date_str, output_folder):
             '组2空头Top10数': sum(1 for n in t10_s if check_company_match(n, group2)),
         })
 
+        # 【核心修复】：清洗 Sheet 名称，过滤掉 Excel 禁止的特殊字符（如 / \ ? * : [ ]）
+        safe_sheet_name = (
+            re.sub(r'[\\/*?:[\]/]', '_', v_name)[:31]
+            if v_name != '统计汇总'
+            else '汇总'
+        )
+
         if not df_l.empty:
           df_l.drop(columns=['num_val']).to_excel(
-              writer, sheet_name=v_name[:31], startcol=0, startrow=1, index=False
+              writer,
+              sheet_name=safe_sheet_name,
+              startcol=0,
+              startrow=1,
+              index=False,
           )
         if not df_s.empty:
           df_s.drop(columns=['num_val']).to_excel(
-              writer, sheet_name=v_name[:31], startcol=5, startrow=1, index=False
+              writer,
+              sheet_name=safe_sheet_name,
+              startcol=5,
+              startrow=1,
+              index=False,
           )
 
       if summary:
@@ -482,7 +497,7 @@ def export_excel_for_date(parsed_variety_data, date_str, output_folder):
 def main():
   log_print('=' * 60)
   log_print(
-      '🚀 启动期货龙虎榜智能分时接力采集程序 (高稳定串行单线程版 + 异常容错保护)'
+      '🚀 启动期货龙虎榜智能分时接力采集程序 (高稳定串行单线程版 + 字符清洗修复)'
   )
   log_print('=' * 60)
 
