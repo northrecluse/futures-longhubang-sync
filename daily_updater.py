@@ -212,7 +212,6 @@ def safe_goto(page, url, timeout=60000, wait_until='domcontentloaded'):
 def auto_login_and_close_ad(page, username, password):
   log_print('正在打开登录页面...')
   if not safe_goto(page, 'https://jiaoyikecha.com/#/user/login'):
-    log_print('❌ 无法打开登录页面，网络异常！')
     return False
 
   ocr = ddddocr.DdddOcr(show_ad=False)
@@ -296,7 +295,6 @@ def auto_login_and_close_ad(page, username, password):
 
 
 def crawl_single_variety(page, date_str, raw_variety):
-  """单品种串行抓取函数（高稳定、单线程无冲突）"""
   v_name = (raw_variety.split('/')[0] if '/' in raw_variety else raw_variety).strip()
   long_rows, short_rows = [], []
 
@@ -402,85 +400,89 @@ def export_excel_for_date(parsed_variety_data, date_str, output_folder):
     log_print(f'⚠️ 日期 {date_str} 所有品种均未抓取到有效数据，跳过导出！')
     return False
 
-  with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-    for v_name, v_data in valid_variety_data.items():
-      df_l, df_s = v_data['long'], v_data['short']
+  try:
+    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+      for v_name, v_data in valid_variety_data.items():
+        df_l, df_s = v_data['long'], v_data['short']
 
-      t10_l = df_l.head(10)['席位/期货公司'].tolist() if not df_l.empty else []
-      t10_s = df_s.head(10)['席位/期货公司'].tolist() if not df_s.empty else []
+        t10_l = df_l.head(10)['席位/期货公司'].tolist() if not df_l.empty else []
+        t10_s = df_s.head(10)['席位/期货公司'].tolist() if not df_s.empty else []
 
-      summary.append({
-          '日期': datetime.strptime(date_str, '%Y-%m-%d').date(),
-          '品种': v_name,
-          '主力合约': '全合约',
-          '组1多头Top10数': sum(1 for n in t10_l if check_company_match(n, group1)),
-          '组1空头Top10数': sum(1 for n in t10_s if check_company_match(n, group1)),
-          '组2多头Top10数': sum(1 for n in t10_l if check_company_match(n, group2)),
-          '组2空头Top10数': sum(1 for n in t10_s if check_company_match(n, group2)),
-      })
+        summary.append({
+            '日期': datetime.strptime(date_str, '%Y-%m-%d').date(),
+            '品种': v_name,
+            '主力合约': '全合约',
+            '组1多头Top10数': sum(1 for n in t10_l if check_company_match(n, group1)),
+            '组1空头Top10数': sum(1 for n in t10_s if check_company_match(n, group1)),
+            '组2多头Top10数': sum(1 for n in t10_l if check_company_match(n, group2)),
+            '组2空头Top10数': sum(1 for n in t10_s if check_company_match(n, group2)),
+        })
 
-      if not df_l.empty:
-        df_l.drop(columns=['num_val']).to_excel(
-            writer, sheet_name=v_name[:31], startcol=0, startrow=1, index=False
+        if not df_l.empty:
+          df_l.drop(columns=['num_val']).to_excel(
+              writer, sheet_name=v_name[:31], startcol=0, startrow=1, index=False
+          )
+        if not df_s.empty:
+          df_s.drop(columns=['num_val']).to_excel(
+              writer, sheet_name=v_name[:31], startcol=5, startrow=1, index=False
+          )
+
+      if summary:
+        pd.DataFrame(summary).to_excel(writer, sheet_name='统计汇总', index=False)
+        wb = writer.book
+        if '统计汇总' in wb.sheetnames:
+          wb._sheets.insert(0, wb._sheets.pop(wb.sheetnames.index('统计汇总')))
+
+    # 美化样式
+    wb = openpyxl.load_workbook(output_file)
+    header_fill = PatternFill(
+        start_color='1F4E78', end_color='1F4E78', fill_type='solid'
+    )
+    header_font = Font(name='微软雅黑', size=10, bold=True, color='FFFFFF')
+    thin_border = Border(
+        left=Side(style='thin', color='D9D9D9'),
+        right=Side(style='thin', color='D9D9D9'),
+        top=Side(style='thin', color='D9D9D9'),
+        bottom=Side(style='thin', color='D9D9D9'),
+    )
+
+    for ws in wb.worksheets:
+      for row_idx, row in enumerate(ws.iter_rows(), start=1):
+        is_header = (ws.title == '统计汇总' and row_idx == 1) or (
+            ws.title != '统计汇总' and row_idx == 2
         )
-      if not df_s.empty:
-        df_s.drop(columns=['num_val']).to_excel(
-            writer, sheet_name=v_name[:31], startcol=5, startrow=1, index=False
+        for col_idx, cell in enumerate(row, start=1):
+          cell.alignment = Alignment(
+              horizontal='center', vertical='center', wrap_text=True
+          )
+          cell.border = thin_border
+          if ws.title == '统计汇总' and row_idx > 1 and col_idx == 1:
+            cell.number_format = 'yyyy-mm-dd'
+          if is_header:
+            cell.fill = header_fill
+            cell.font = header_font
+      for col in ws.columns:
+        max_len = max(
+            (
+                sum(2 if ord(c) > 127 else 1 for c in str(cell.value or ''))
+                for cell in col
+            ),
+            default=0,
         )
+        ws.column_dimensions[col[0].column_letter].width = max(max_len + 4, 12)
 
-    if summary:
-      pd.DataFrame(summary).to_excel(writer, sheet_name='统计汇总', index=False)
-      wb = writer.book
-      if '统计汇总' in wb.sheetnames:
-        wb._sheets.insert(0, wb._sheets.pop(wb.sheetnames.index('统计汇总')))
-
-  # 美化样式
-  wb = openpyxl.load_workbook(output_file)
-  header_fill = PatternFill(
-      start_color='1F4E78', end_color='1F4E78', fill_type='solid'
-  )
-  header_font = Font(name='微软雅黑', size=10, bold=True, color='FFFFFF')
-  thin_border = Border(
-      left=Side(style='thin', color='D9D9D9'),
-      right=Side(style='thin', color='D9D9D9'),
-      top=Side(style='thin', color='D9D9D9'),
-      bottom=Side(style='thin', color='D9D9D9'),
-  )
-
-  for ws in wb.worksheets:
-    for row_idx, row in enumerate(ws.iter_rows(), start=1):
-      is_header = (ws.title == '统计汇总' and row_idx == 1) or (
-          ws.title != '统计汇总' and row_idx == 2
-      )
-      for col_idx, cell in enumerate(row, start=1):
-        cell.alignment = Alignment(
-            horizontal='center', vertical='center', wrap_text=True
-        )
-        cell.border = thin_border
-        if ws.title == '统计汇总' and row_idx > 1 and col_idx == 1:
-          cell.number_format = 'yyyy-mm-dd'
-        if is_header:
-          cell.fill = header_fill
-          cell.font = header_font
-    for col in ws.columns:
-      max_len = max(
-          (
-              sum(2 if ord(c) > 127 else 1 for c in str(cell.value or ''))
-              for cell in col
-          ),
-          default=0,
-      )
-      ws.column_dimensions[col[0].column_letter].width = max(max_len + 4, 12)
-
-  wb.save(output_file)
-  log_print(f'✅ 数据文件已生成并美化: {output_file}')
-  return True
+    wb.save(output_file)
+    log_print(f'✅ 数据文件已生成并美化: {output_file}')
+    return True
+  except Exception as e:
+    log_print(f'❌ 导出 Excel 异常: {e}')
+    return False
 
 
 def main():
   log_print('=' * 60)
   log_print(
-      '🚀 启动期货龙虎榜智能分时接力采集程序 (高稳定串行单线程版 + 稳健OCR登录)'
+      '🚀 启动期货龙虎榜智能分时接力采集程序 (高稳定串行单线程版 + 异常容错保护)'
   )
   log_print('=' * 60)
 
@@ -546,7 +548,6 @@ def main():
       parsed_variety_data = {}
       total_v = len(varieties)
 
-      # 纯单线程串行抓取当前交易日所有品种，实时输出日志，绝不卡顿
       for i, v in enumerate(varieties, 1):
         try:
           v_name, v_data = crawl_single_variety(page, date_str, v)
@@ -562,7 +563,7 @@ def main():
 
     browser.close()
 
-  # 自动同步推送到云端 GitHub 仓库
+  # 自动同步推送到云端 GitHub 仓库（带容错保护）
   try:
     subprocess.run(
         ['git', 'config', '--global', 'user.name', 'GitHub Action Bot'],
