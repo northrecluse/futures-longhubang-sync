@@ -23,14 +23,16 @@ def log_print(msg):
 
 
 def get_target_date_range_trade_days(
-    start_date_str='2023-01-01', end_date_str=None
+    start_date_str='2024-01-02', end_date_str='2026-10-31'
 ):
-    """获取从 2023-01-01 到今天的指定日期范围内的所有实际交易日（自动排除周末及法定节假日）"""
-    if not end_date_str:
-        end_date_str = datetime.now().strftime('%Y-%m-%d')
-
+    """获取从 2024-01-02 到 2026-10-31 的指定日期范围内的所有实际交易日（自动排除周末及法定节假日）"""
     start_dt = datetime.strptime(start_date_str, '%Y-%m-%d')
     end_dt = datetime.strptime(end_date_str, '%Y-%m-%d')
+
+    # 如果当前时间早于结束日期，则以今天为准（防止超出当前现实日期）
+    today_dt = datetime.now()
+    if end_dt > today_dt:
+        end_dt = today_dt
 
     curr = start_dt
     trade_days = []
@@ -492,14 +494,15 @@ def export_excel_for_date(parsed_variety_data, date_str, output_folder):
 def main():
     log_print('=' * 60)
     log_print(
-        '🚀 启动期货龙虎榜智能分时接力采集程序 (支持 Cookie 免登录复用 + 自动同步)'
+        '🚀 启动期货龙虎榜智能分时接力采集程序 (目标区间: 2024-01-02 至 2026-10-31)'
     )
     log_print('=' * 60)
 
     script_start_time = time.time()
     MAX_RUN_SECONDS = 5.5 * 3600  # 5.5 小时安全余量
 
-    target_dates = get_target_date_range_trade_days('2023-01-01')
+    # 获取指定时间段内的所有实际交易日
+    target_dates = get_target_date_range_trade_days('2024-01-02', '2026-10-31')
     varieties = get_filtered_varieties()
 
     output_folder = 'futures_longhubang_data'
@@ -512,7 +515,7 @@ def main():
             pending_dates.append(d)
 
     if not pending_dates:
-        log_print('✨ 所有历史及今日交易日数据均已完整，无需重复抓取！')
+        log_print('✨ 所有指定时间段内的数据均已完整，无需重复抓取！')
         return
 
     log_print(
@@ -545,7 +548,7 @@ def main():
         page.set_default_timeout(60000)
 
         log_print('正在验证会话有效性...')
-        safe_goto(page, 'https://jiaoyikecha.com/#/variety/position/variety=%E9%93%84/code=all/date=2023-01-03')
+        safe_goto(page, 'https://jiaoyikecha.com/#/variety/position/variety=%E9%93%84/code=all/date=2024-01-02')
         page.wait_for_timeout(3000)
 
         if 'login' in page.url:
