@@ -310,13 +310,12 @@ def crawl_single_variety(page, date_str, raw_variety):
     v_name = (raw_variety.split('/')[0] if '/' in raw_variety else raw_variety).strip()
     long_rows, short_rows = [], []
 
-    for attempt in range(1, 4):  # 最多重试 3 次
+    for _ in range(3):
         try:
             encoded_variety = urllib.parse.quote(v_name)
             target_url = f'https://jiaoyikecha.com/#/variety/position/variety={encoded_variety}/code=all/date={date_str}'
             safe_goto(page, target_url)
 
-            # 关闭可能弹出的提示框
             try:
                 close_btn = page.locator(
                     '.el-message-box__close, .el-dialog__headerbtn'
@@ -326,9 +325,8 @@ def crawl_single_variety(page, date_str, raw_variety):
             except:
                 pass
 
-            # 恢复稳妥的轮询检测：等待页面真正渲染出包含数据的表格或多空关键字
             start_time = time.time()
-            while time.time() - start_time < 8:  # 最多等待 8 秒
+            while time.time() - start_time < 6:
                 page.wait_for_timeout(400)
                 is_rendered = page.evaluate("""
                     () => {
@@ -336,7 +334,7 @@ def crawl_single_variety(page, date_str, raw_variety):
                         const tables = document.querySelectorAll('table');
                         let hasTableWithData = false;
                         for (let t of tables) {
-                            if (t.querySelectorAll('tr').length > 2) {
+                            if (t.querySelectorAll('tr').length > 3) {
                                 hasTableWithData = true;
                                 break;
                             }
@@ -347,7 +345,6 @@ def crawl_single_variety(page, date_str, raw_variety):
                 if is_rendered:
                     break
 
-            # 提取数据
             table_data = page.evaluate("""
                 () => {
                     let longData = [], shortData = [];
@@ -360,35 +357,21 @@ def crawl_single_variety(page, date_str, raw_variety):
                         const rows = Array.from(table.querySelectorAll('tr')).map(tr => 
                             Array.from(tr.querySelectorAll('th, td')).map(td => td.innerText.trim())
                         ).filter(cells => cells.length > 0);
-                        
-                        if ((cardText.includes('多头') || cardText.includes('多头持仓')) && longData.length === 0 && rows.length > 2) {
-                            longData = rows;
-                        } else if ((cardText.includes('空头') || cardText.includes('空头持仓')) && shortData.length === 0 && rows.length > 2) {
-                            shortData = rows;
-                        }
+                        if ((cardText.includes('多头') || cardText.includes('多头持仓')) && longData.length === 0 && rows.length > 2) longData = rows;
+                        else if ((cardText.includes('空头') || cardText.includes('空头持仓')) && shortData.length === 0 && rows.length > 2) shortData = rows;
                     });
-                    
-                    if (longData.length === 0 && tables.length > 0) {
-                        longData = Array.from(tables[0].querySelectorAll('tr')).map(tr => Array.from(tr.querySelectorAll('th, td')).map(td => td.innerText.trim())).filter(c => c.length > 0);
-                    }
-                    if (shortData.length === 0 && tables.length > 1) {
-                        shortData = Array.from(tables[1].querySelectorAll('tr')).map(tr => Array.from(tr.querySelectorAll('th, td')).map(td => td.innerText.trim())).filter(c => c.length > 0);
-                    }
-                    
+                    if (longData.length === 0 && tables.length > 0) longData = Array.from(tables[0].querySelectorAll('tr')).map(tr => Array.from(tr.querySelectorAll('th, td')).map(td => td.innerText.trim())).filter(c => c.length > 0);
+                    if (shortData.length === 0 && tables.length > 1) shortData = Array.from(tables[1].querySelectorAll('tr')).map(tr => Array.from(tr.querySelectorAll('th, td')).map(td => td.innerText.trim())).filter(c => c.length > 0);
                     return { long_table: longData, short_table: shortData };
                 }
             """)
             long_rows, short_rows = table_data.get('long_table', []), table_data.get(
                 'short_table', []
             )
-
-            # 如果成功抓到有效行数，跳出重试
             if len(long_rows) > 2 or len(short_rows) > 2:
                 break
-            else:
-                page.wait_for_timeout(1500)
-        except Exception as e:
-            page.wait_for_timeout(1500)
+        except:
+            page.wait_for_timeout(800)
 
     def clean_rows(rows, is_long=True):
         lst = []
@@ -606,8 +589,8 @@ def main():
                         top5_s_str = ", ".join([f"{r['席位/期货公司']}({r['净持仓']})" for _, r in df_s.head(5).iterrows()]) if not df_s.empty else "无数据"
 
                         log_print(f'    📊 [{date_str}] 品种 [{i}/{total_v}] {v_name} 抓取成功')
-                        log_print(f'        🔹 【多头 Top5】: {top5_l_str}')
-                        log_print(f'        🔸 【空头 Top5】: {top5_s_str}')
+                        log_print(f'       🔹 【多头 Top5】: {top5_l_str}')
+                        log_print(f'       🔸 【空头 Top5】: {top5_s_str}')
                 except Exception as e:
                     log_print(f'❌ 品种 {v} 抓取异常: {e}')
 
