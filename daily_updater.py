@@ -207,6 +207,7 @@ def safe_goto(page, url, timeout=60000, wait_until='domcontentloaded'):
 
 
 def auto_login_and_close_ad(page, username, password):
+  """自动填写账号密码、OCR识别验证码登录，并自动关闭广告弹窗（使用经验证稳健的定位逻辑）"""
   log_print('正在打开登录页面...')
   if not safe_goto(page, 'https://jiaoyikecha.com/#/user/login'):
     return False
@@ -235,6 +236,7 @@ def auto_login_and_close_ad(page, username, password):
       pwd_locator.type(password, delay=30)
       pwd_locator.dispatch_event('input')
 
+      # 精准定位验证码图片
       captcha_locator = page.locator(
           "img[src*='captcha'], img[class*='code'], .el-input + img, canvas,"
           ' form img'
@@ -500,7 +502,6 @@ def main():
   script_start_time = time.time()
   MAX_RUN_SECONDS = 5.5 * 3600  # 5.5 小时安全余量
 
-  # 指定目标日期范围：2024-07-01 至 2026-10-31
   target_dates = get_target_date_range_trade_days('2024-07-01', '2026-10-31')
   varieties = get_filtered_varieties()
 
@@ -586,7 +587,12 @@ def main():
     )
     subprocess.run(['git', 'add', output_folder], check=True)
     subprocess.run(
-        ['git', 'commit', '-m', 'Auto-sync batch futures data update (2024.07-2026.10)'],
+        [
+            'git',
+            'commit',
+            '-m',
+            'Auto-sync batch futures data update (2024.07-2026.10)',
+        ],
         check=True,
     )
     subprocess.run(['git', 'push'], check=True)
