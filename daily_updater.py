@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 import os
 import re
-import subprocess
+import subprocess  # 用于云端自动 git 提交归档
 import time
 import urllib.parse
 import chinese_calendar as chinesecalendar
@@ -197,19 +197,21 @@ def check_company_match(seat_name, target_companies):
 def safe_goto(page, url, timeout=60000, wait_until='domcontentloaded'):
   for attempt in range(1, 4):
     try:
+      log_print(f'-> 正在打开页面: {url} (尝试 {attempt}/3)...')
       page.goto(url, wait_until=wait_until, timeout=timeout)
-      page.wait_for_timeout(1000)
+      page.wait_for_timeout(2000)
       return True
     except Exception as e:
       log_print(f'⚠️ 打开页面超时或异常 ({e})，正在重试...')
-      page.wait_for_timeout(1500)
+      page.wait_for_timeout(2000)
   return False
 
 
 def auto_login_and_close_ad(page, username, password):
-  """自动填写账号密码、OCR识别验证码登录，并自动关闭广告弹窗（使用经验证稳健的定位逻辑）"""
+  """【使用已验证成功的登录模块】自动填写账号密码、OCR识别验证码登录，并自动关闭广告弹窗"""
   log_print('正在打开登录页面...')
   if not safe_goto(page, 'https://jiaoyikecha.com/#/user/login'):
+    log_print('❌ 无法打开登录页面，网络异常！')
     return False
 
   ocr = ddddocr.DdddOcr(show_ad=False)
@@ -218,6 +220,9 @@ def auto_login_and_close_ad(page, username, password):
   for attempt in range(1, max_retries + 1):
     try:
       log_print(f'\n--- 第 {attempt} 次尝试登录 ---')
+
+      # 1. 填写账号和密码
+      log_print('正在填写账号和密码...')
       user_locator = page.locator(
           "input[placeholder*='账号'], input[placeholder*='手机号'],"
           " input[type='text']"
@@ -236,7 +241,7 @@ def auto_login_and_close_ad(page, username, password):
       pwd_locator.type(password, delay=30)
       pwd_locator.dispatch_event('input')
 
-      # 精准定位验证码图片
+      # 2. 定位并截取验证码
       captcha_locator = page.locator(
           "img[src*='captcha'], img[class*='code'], .el-input + img, canvas,"
           ' form img'
@@ -245,6 +250,7 @@ def auto_login_and_close_ad(page, username, password):
       captcha_code = ocr.classification(captcha_bytes)
       log_print(f'-> 【ddddocr】识别结果: {captcha_code}')
 
+      # 填写验证码
       code_locator = page.locator(
           "input[placeholder*='图形验证码'], input[placeholder*='验证码']"
       ).first
@@ -254,47 +260,70 @@ def auto_login_and_close_ad(page, username, password):
       code_locator.dispatch_event('input')
       page.wait_for_timeout(500)
 
+      # 3. 点击绿色主登录按钮
+      log_print('正在精准点击登录按钮...')
       login_btn = page.locator(
           ".el-button--primary, button:has-text('登录')"
       ).first
+
       if login_btn.count() > 0:
         box = login_btn.bounding_box()
         if box:
-          page.mouse.click(
-              box['x'] + box['width'] / 2, box['y'] + box['height'] / 2, force=True
-          )
+          center_x = box['x'] + box['width'] / 2
+          center_y = box['y'] + box['height'] / 2
+          log_print(f'-> 登录按钮坐标: ({center_x}, {center_y})')
+          page.mouse.click(center_x, center_y, force=True)
         else:
           login_btn.click(force=True)
       else:
+        log_print('-> 未找到主按钮，执行备用方案...')
         page.locator('button').last.click(force=True)
 
+      # 等待页面跳转
       page.wait_for_timeout(4000)
-      if 'login' not in page.url:
+      current_url = page.url
+      log_print(f'当前页面 URL: {current_url}')
+
+      if 'login' not in current_url:
         log_print('🎉 恭喜！成功登录系统！')
+
+        log_print('正在等待广告弹窗弹出...')
         page.wait_for_timeout(3000)
+
+        # 检测并自动关闭广告弹窗
         try:
+          log_print('正在检测并关闭广告弹窗...')
           close_btn = page.locator(
               '.el-dialog__headerbtn, .el-dialog__close, div[role="dialog"]'
               " button, [class*='close']"
           ).last
+
           if close_btn.is_visible(timeout=3000):
             close_btn.click(force=True)
             log_print('✅ 成功关闭广告弹窗！')
-        except Exception:
-          pass
+            page.wait_for_timeout(1000)
+          else:
+            log_print('-> 未检测到广告弹窗或无需关闭。')
+        except Exception as ad_err:
+          log_print(f'-> 关闭广告时发生异常（可忽略）: {ad_err}')
+
         return True
       else:
-        log_print('⚠️ 验证码识别错误，正在自动刷新验证码重试...')
+        log_print('⚠️ 验证码可能识别错误，正在自动刷新验证码重试...')
         captcha_locator.click()
         page.wait_for_timeout(1000)
+
     except Exception as e:
-      log_print(f'❌ 登录尝试过程中发生异常: {e}')
+      log_print(f'❌ 尝试登录过程中发生异常: {e}')
       page.wait_for_timeout(1000)
+
   return False
 
 
 def crawl_single_variety(page, date_str, raw_variety):
-  v_name = (raw_variety.split('/')[0] if '/' in raw_variety else raw_variety).strip()
+  v_name = (
+      raw_variety.split('/')[0] if '/' in raw_variety else raw_variety
+  ).strip()
   long_rows, short_rows = [], []
 
   for _ in range(3):
@@ -534,11 +563,14 @@ def main():
             '--no-sandbox',
             '--disable-setuid-sandbox',
             '--ignore-certificate-errors',
+            '--ignore-ssl-errors',
+            '--allow-insecure-localhost',
         ],
     )
     context = browser.new_context(ignore_https_errors=True)
     page = context.new_page()
     page.set_default_timeout(60000)
+    page.set_default_navigation_timeout(60000)
 
     if not auto_login_and_close_ad(page, username, password):
       log_print('❌ 初始登录失败，退出程序！')
@@ -549,7 +581,7 @@ def main():
       elapsed_time = time.time() - script_start_time
       if elapsed_time > MAX_RUN_SECONDS:
         log_print(
-            '⏰ 【限时保护触发】本次运行已满 5.5 小时，脚本已安全保存当前进度并退出。'
+            '⏰ [限时保护触发] 本次运行已满 5.5 小时，脚本已安全保存当前进度并退出。'
         )
         break
 
@@ -565,9 +597,7 @@ def main():
           v_name, v_data = crawl_single_variety(page, date_str, v)
           if v_name:
             parsed_variety_data[v_name] = v_data
-            log_print(
-                f'   📊 [{date_str}] 品种 [{i}/{total_v}] {v_name} 抓取成功'
-            )
+            log_print(f'   📊 [{date_str}] 品种 [{i}/{total_v}] {v_name} 抓取成功')
         except Exception as e:
           log_print(f'❌ 品种 {v} 抓取异常: {e}')
 
