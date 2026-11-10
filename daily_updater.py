@@ -214,32 +214,41 @@ def auto_login_and_close_ad(page, username, password):
     if not safe_goto(page, 'https://jiaoyikecha.com/#/user/login'):
         return False
 
+    page.wait_for_timeout(3000)
     ocr = ddddocr.DdddOcr(show_ad=False)
     max_retries = 10
 
     for attempt in range(1, max_retries + 1):
         try:
             log_print(f'\n--- 第 {attempt} 次尝试登录 ---')
+            
             user_locator = page.locator(
                 "input[placeholder*='账号'], input[placeholder*='手机号'], input[type='text']"
             ).first
+            user_locator.wait_for(state='visible', timeout=10000)
+
             pwd_locator = page.locator(
                 "input[placeholder*='密码'], input[type='password']"
             ).first
 
             user_locator.click()
             user_locator.fill('')
-            user_locator.type(username, delay=30)
+            user_locator.type(username, delay=40)
             user_locator.dispatch_event('input')
+            page.wait_for_timeout(400)
 
             pwd_locator.click()
             pwd_locator.fill('')
-            pwd_locator.type(password, delay=30)
+            pwd_locator.type(password, delay=40)
             pwd_locator.dispatch_event('input')
+            page.wait_for_timeout(600)
 
             captcha_locator = page.locator(
                 "img[src*='captcha'], img[class*='code'], .el-input + img, canvas, form img"
             ).first
+            captcha_locator.wait_for(state='visible', timeout=8000)
+            page.wait_for_timeout(1000)
+
             captcha_bytes = captcha_locator.screenshot()
             captcha_code = ocr.classification(captcha_bytes)
             log_print(f'-> 【ddddocr】识别结果: {captcha_code}')
@@ -249,9 +258,9 @@ def auto_login_and_close_ad(page, username, password):
             ).first
             code_locator.click()
             code_locator.fill('')
-            code_locator.type(captcha_code, delay=30)
+            code_locator.type(captcha_code, delay=40)
             code_locator.dispatch_event('input')
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(1000)
 
             login_btn = page.locator(
                 ".el-button--primary, button:has-text('登录')"
@@ -267,27 +276,37 @@ def auto_login_and_close_ad(page, username, password):
             else:
                 page.locator('button').last.click(force=True)
 
-            page.wait_for_timeout(4000)
-            if 'login' not in page.url:
+            log_print('⏳ 正在等待服务器响应登录与页面跳转（12秒缓冲）...')
+            page.wait_for_timeout(12000)
+
+            current_url = page.url
+            log_print(f'-> 当前页面 URL: {current_url}')
+
+            if 'login' not in current_url:
                 log_print('🎉 恭喜！成功登录系统！')
                 page.wait_for_timeout(3000)
                 try:
                     close_btn = page.locator(
                         '.el-dialog__headerbtn, .el-dialog__close, div[role="dialog"] button, [class*="close"]'
                     ).last
-                    if close_btn.is_visible(timeout=3000):
+                    if close_btn.is_visible(timeout=4000):
                         close_btn.click(force=True)
+                        page.wait_for_timeout(1000)
                         log_print('✅ 成功关闭广告弹窗！')
                 except Exception:
                     pass
                 return True
             else:
-                log_print('⚠️ 验证码识别错误，正在自动刷新验证码重试...')
-                captcha_locator.click()
-                page.wait_for_timeout(1000)
+                log_print('⚠️ 登录未成功（仍停留在登录页），正在安全刷新验证码重试...')
+                try:
+                    captcha_locator.click()
+                except Exception:
+                    pass
+                page.wait_for_timeout(3000)
         except Exception as e:
             log_print(f'❌ 登录尝试过程中发生异常: {e}')
-            page.wait_for_timeout(1000)
+            page.wait_for_timeout(3000)
+            
     return False
 
 
