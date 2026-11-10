@@ -20,12 +20,9 @@ def log_print(msg):
 
 
 def get_target_date_range_trade_days(
-    start_date_str='2023-01-01', end_date_str=None
+    start_date_str='2024-07-01', end_date_str='2026-10-31'
 ):
-  """获取从 2023-01-01 到今天的指定日期范围内的所有实际交易日（自动排除周末及法定节假日）"""
-  if not end_date_str:
-    end_date_str = datetime.now().strftime('%Y-%m-%d')
-
+  """获取从 start_date_str 到 end_date_str 的指定日期范围内的所有实际交易日（自动排除周末及法定节假日）"""
   start_dt = datetime.strptime(start_date_str, '%Y-%m-%d')
   end_dt = datetime.strptime(end_date_str, '%Y-%m-%d')
 
@@ -213,13 +210,25 @@ def safe_goto(page, url, timeout=60000, wait_until='domcontentloaded'):
 def auto_login_and_close_ad(page, username, password):
   context = page.context
 
-  # 1. 优先尝试使用 Cookie 注入免登录
-  cookies_str = os.environ.get('COOKIES_JSON')
-  if cookies_str:
+  # 1. 优先尝试使用本地 cookies.json 文件或环境变量中的 Cookie 免登录
+  cookies_data = None
+  if os.path.exists('cookies.json'):
     try:
-      cookies = json.loads(cookies_str)
-      context.add_cookies(cookies)
-      log_print('🍪 成功加载环境变量中的 Cookie，尝试免登录访问...')
+      with open('cookies.json', 'r', encoding='utf-8') as f:
+        cookies_data = json.load(f)
+      log_print('🍪 发现本地 cookies.json 文件，尝试加载免登录...')
+    except Exception:
+      pass
+
+  if not cookies_data and os.environ.get('COOKIES_JSON'):
+    try:
+      cookies_data = json.loads(os.environ.get('COOKIES_JSON'))
+    except Exception:
+      pass
+
+  if cookies_data:
+    try:
+      context.add_cookies(cookies_data)
       safe_goto(page, 'https://jiaoyikecha.com/#/user/home')
       page.wait_for_timeout(4000)
       if 'login' not in page.url:
@@ -236,11 +245,9 @@ def auto_login_and_close_ad(page, username, password):
           pass
         return True
       else:
-        log_print(
-            '⚠️ Cookie 已失效或不匹配，自动切回账号密码打码登录兜底流程...'
-        )
+        log_print('⚠️ 本地 Cookie 已失效，切回账号密码打码登录...')
     except Exception as e:
-      log_print(f'⚠️ 解析 Cookie 异常: {e}')
+      log_print(f'⚠️ 加载 Cookie 异常: {e}')
 
   # 2. 兜底逻辑：原账号密码打码登录
   log_print('正在打开登录页面...')
@@ -575,22 +582,54 @@ def export_excel_for_date(parsed_variety_data, date_str, output_folder):
     return False
 
 
+def git_commit_and_push(output_folder, date_str):
+  """单日数据完成后立刻提交并推送到云端，防止中断丢失"""
+  try:
+    subprocess.run(
+        ['git', 'config', '--global', 'user.name', 'GitHub Action Bot'],
+        check=True,
+    )
+    subprocess.run(
+        ['git', 'config', '--global', 'user.email', 'action@github.com'],
+        check=True,
+    )
+    subprocess.run(['git', 'add', output_folder], check=True)
+    subprocess.run(
+        [
+            'git',
+            'commit',
+            '-m',
+            f'Auto-sync futures data update for {date_str}',
+        ],
+        check=True,
+    )
+    subprocess.run(['git', 'push'], check=True)
+    log_print(f'🚀 交易日 {date_str} 的数据已成功自动同步推送到云端仓库！')
+  except Exception as e:
+    log_print(f'⚠️ Git 推送提示（无新更改或无远端仓库可忽略）: {e}')
+
+
 def main():
   log_print('=' * 60)
   log_print(
-      '🚀 启动期货龙虎榜智能分时接力采集程序 (高稳定串行单线程版 + Cookie免登录)'
+      '🚀 启动期货龙虎榜智能分时接力采集程序 (2024.7.1-2026.10.31区间 + 云端5.5小时超时保护接力版)'
   )
   log_print('=' * 60)
 
-  script_start_time = time.time()
-  MAX_RUN_SECONDS = 5.5 * 3600
+  # 记录脚本启动的起始绝对时间戳
+  start_wall_time = time.time()
+  # 设置最大运行时间上限：5小时20分钟（19200秒），留出安全富余时间让最后的推送完成并优雅退出
+  MAX_RUN_TIME = 5 * 3600 + 20 * 60
 
-  target_dates = get_target_date_range_trade_days('2023-01-01')
+  target_dates = get_target_date_range_trade_days(
+      '2024-07-01', '2026-10-31'
+  )
   varieties = get_filtered_varieties()
 
   output_folder = 'futures_longhubang_data'
   os.makedirs(output_folder, exist_ok=True)
 
+  # 智能增量过滤：检查本地已有且正常的 Excel 文件
   pending_dates = []
   for d in target_dates:
     f_path = os.path.join(output_folder, f'全品种期货持仓龙虎榜汇总_{d}.xlsx')
@@ -598,11 +637,11 @@ def main():
       pending_dates.append(d)
 
   if not pending_dates:
-    log_print('✨ 所有历史及今日交易日数据均已完整，无需重复抓取！')
+    log_print('✨ 目标区间内所有交易日数据均已完整，无需重复抓取！')
     return
 
   log_print(
-      f'📌 目标区间总交易日: {len(target_dates)} 天，当前待补全缺失交易日:'
+      f'📌 目标区间 (2024-07-01至2026-10-31) 总交易日: {len(target_dates)} 天，当前待补全缺失交易日:'
       f' {len(pending_dates)} 天'
   )
 
@@ -628,17 +667,20 @@ def main():
       return
 
     for idx, date_str in enumerate(pending_dates, 1):
-      elapsed_time = time.time() - script_start_time
-      if elapsed_time > MAX_RUN_SECONDS:
+      # 【核心改动】每循环处理一个新日期前，先检查是否超出了 5.5 小时安全限制
+      elapsed_time = time.time() - start_wall_time
+      if elapsed_time > MAX_RUN_TIME:
         log_print(
-            '⏰ 【限时保护触发】本次运行已满 5.5 小时，脚本已安全保存当前进度并退出。'
-            '明天下午 16:46 将自动接力继续运行！'
+            f'⏰ 警告：当前脚本已运行 {elapsed_time/3600:.2f} 小时，接近 5.5 小时安全阈值！'
+        )
+        log_print(
+            '🛑 正在安全中断本次运行，已完成的数据已全部同步至云端。等待下次触发时自动接力！'
         )
         break
 
       log_print(
           f"\n{'='*25} 正在处理待补全交易日 [{idx}/{len(pending_dates)}]:"
-          f" {date_str} (已耗时: {elapsed_time/3600:.2f}小时) {'='*25}"
+          f" {date_str} {'='*25}"
       )
       parsed_variety_data = {}
       total_v = len(varieties)
@@ -656,28 +698,17 @@ def main():
         except Exception as e:
           log_print(f'❌ 品种 {v} 抓取异常: {e}')
 
-      export_excel_for_date(parsed_variety_data, date_str, output_folder)
+      # 导出当前日期的 Excel
+      success = export_excel_for_date(
+          parsed_variety_data, date_str, output_folder
+      )
+      if success:
+        # 单日完成后立即提交并推送到远端仓库，实现真正的断点接力保护
+        git_commit_and_push(output_folder, date_str)
 
     browser.close()
 
-  try:
-    subprocess.run(
-        ['git', 'config', '--global', 'user.name', 'GitHub Action Bot'],
-        check=True,
-    )
-    subprocess.run(
-        ['git', 'config', '--global', 'user.email', 'action@github.com'],
-        check=True,
-    )
-    subprocess.run(['git', 'add', output_folder], check=True)
-    subprocess.run(
-        ['git', 'commit', -m, 'Auto-sync batch futures data update'],
-        check=True,
-    )
-    subprocess.run(['git', 'push'], check=True)
-    log_print('🚀 当前批次数据已成功自动同步推送到云端 GitHub 仓库！')
-  except Exception as e:
-    log_print(f'⚠️ Git 推送提示（若无变更可忽略）: {e}')
+  log_print('🚀 当前批次运行任务圆满结束！')
 
 
 if __name__ == '__main__':
