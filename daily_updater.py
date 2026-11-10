@@ -310,13 +310,13 @@ def crawl_single_variety(page, date_str, raw_variety):
     v_name = (raw_variety.split('/')[0] if '/' in raw_variety else raw_variety).strip()
     long_rows, short_rows = [], []
 
-    # 优化点：增加内部重试机制与显式等待，解决加载慢导致空数据的问题
-    for attempt in range(1, 4):
+    for attempt in range(1, 4):  # 最多重试 3 次
         try:
             encoded_variety = urllib.parse.quote(v_name)
             target_url = f'https://jiaoyikecha.com/#/variety/position/variety={encoded_variety}/code=all/date={date_str}'
             safe_goto(page, target_url)
 
+            # 关闭可能弹出的提示框
             try:
                 close_btn = page.locator(
                     '.el-message-box__close, .el-dialog__headerbtn'
@@ -326,15 +326,28 @@ def crawl_single_variety(page, date_str, raw_variety):
             except:
                 pass
 
-            # 显式等待表格或无数据元素出现，避免死等或盲目截取
-            try:
-                page.wait_for_selector('table tr, .el-table__body tr, .no-data, div:has-text("暂无数据")', timeout=8000)
-            except:
-                pass
+            # 恢复稳妥的轮询检测：等待页面真正渲染出包含数据的表格或多空关键字
+            start_time = time.time()
+            while time.time() - start_time < 8:  # 最多等待 8 秒
+                page.wait_for_timeout(400)
+                is_rendered = page.evaluate("""
+                    () => {
+                        const bodyText = document.body.innerText || '';
+                        const tables = document.querySelectorAll('table');
+                        let hasTableWithData = false;
+                        for (let t of tables) {
+                            if (t.querySelectorAll('tr').length > 2) {
+                                hasTableWithData = true;
+                                break;
+                            }
+                        }
+                        return (bodyText.includes('多头') || bodyText.includes('空头')) && hasTableWithData;
+                    }
+                """)
+                if is_rendered:
+                    break
 
-            # 额外给一点缓冲时间确保完整渲染
-            page.wait_for_timeout(1000)
-
+            # 提取数据
             table_data = page.evaluate("""
                 () => {
                     let longData = [], shortData = [];
@@ -347,11 +360,21 @@ def crawl_single_variety(page, date_str, raw_variety):
                         const rows = Array.from(table.querySelectorAll('tr')).map(tr => 
                             Array.from(tr.querySelectorAll('th, td')).map(td => td.innerText.trim())
                         ).filter(cells => cells.length > 0);
-                        if ((cardText.includes('多头') || cardText.includes('多头持仓')) && longData.length === 0 && rows.length > 2) longData = rows;
-                        else if ((cardText.includes('空头') || cardText.includes('空头持仓')) && shortData.length === 0 && rows.length > 2) shortData = rows;
+                        
+                        if ((cardText.includes('多头') || cardText.includes('多头持仓')) && longData.length === 0 && rows.length > 2) {
+                            longData = rows;
+                        } else if ((cardText.includes('空头') || cardText.includes('空头持仓')) && shortData.length === 0 && rows.length > 2) {
+                            shortData = rows;
+                        }
                     });
-                    if (longData.length === 0 && tables.length > 0) longData = Array.from(tables[0].querySelectorAll('tr')).map(tr => Array.from(tr.querySelectorAll('th, td')).map(td => td.innerText.trim())).filter(c => c.length > 0);
-                    if (shortData.length === 0 && tables.length > 1) shortData = Array.from(tables[1].querySelectorAll('tr')).map(tr => Array.from(tr.querySelectorAll('th, td')).map(td => td.innerText.trim())).filter(c => c.length > 0);
+                    
+                    if (longData.length === 0 && tables.length > 0) {
+                        longData = Array.from(tables[0].querySelectorAll('tr')).map(tr => Array.from(tr.querySelectorAll('th, td')).map(td => td.innerText.trim())).filter(c => c.length > 0);
+                    }
+                    if (shortData.length === 0 && tables.length > 1) {
+                        shortData = Array.from(tables[1].querySelectorAll('tr')).map(tr => Array.from(tr.querySelectorAll('th, td')).map(td => td.innerText.trim())).filter(c => c.length > 0);
+                    }
+                    
                     return { long_table: longData, short_table: shortData };
                 }
             """)
@@ -359,13 +382,12 @@ def crawl_single_variety(page, date_str, raw_variety):
                 'short_table', []
             )
 
-            # 如果成功抓到有效持仓行数，直接跳出重试
+            # 如果成功抓到有效行数，跳出重试
             if len(long_rows) > 2 or len(short_rows) > 2:
                 break
             else:
-                # 没数据则稍作等待重试（可能接口还在异步响应）
                 page.wait_for_timeout(1500)
-        except:
+        except Exception as e:
             page.wait_for_timeout(1500)
 
     def clean_rows(rows, is_long=True):
