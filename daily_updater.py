@@ -208,7 +208,7 @@ def safe_goto(page, url, timeout=60000, wait_until='domcontentloaded'):
 
 
 def auto_login_and_close_ad(page, username, password):
-  """【使用已验证成功的登录模块】自动填写账号密码、OCR识别验证码登录，并自动关闭广告弹窗"""
+  """自动填写账号密码、OCR识别验证码登录（优化回车提交与按钮定位），并自动关闭广告弹窗"""
   log_print('正在打开登录页面...')
   if not safe_goto(page, 'https://jiaoyikecha.com/#/user/login'):
     log_print('❌ 无法打开登录页面，网络异常！')
@@ -260,24 +260,37 @@ def auto_login_and_close_ad(page, username, password):
       code_locator.dispatch_event('input')
       page.wait_for_timeout(500)
 
-      # 3. 点击绿色主登录按钮
-      log_print('正在精准点击登录按钮...')
-      login_btn = page.locator(
-          ".el-button--primary, button:has-text('登录')"
-      ).first
+      # 3. 提交表单：优先通过回车键直接提交（最稳健）
+      log_print('正在提交登录（优先使用回车提交）...')
+      code_locator.press('Enter')
+      page.wait_for_timeout(1500)
 
-      if login_btn.count() > 0:
-        box = login_btn.bounding_box()
-        if box:
-          center_x = box['x'] + box['width'] / 2
-          center_y = box['y'] + box['height'] / 2
-          log_print(f'-> 登录按钮坐标: ({center_x}, {center_y})')
-          page.mouse.click(center_x, center_y, force=True)
+      # 如果回车后仍未跳转，尝试通过多种定位器精准点击登录按钮
+      if 'login' in page.url:
+        login_btn = page.locator(
+            "button.el-button--primary, .el-button--primary,"
+            " button:has-text('登录'), span:has-text('登录')"
+        ).first
+
+        if login_btn.count() > 0:
+          try:
+            login_btn.click(force=True, timeout=3000)
+            log_print('-> 已成功点击登录按钮')
+          except Exception as btn_err:
+            log_print(f'-> 点击登录按钮异常: {btn_err}')
         else:
-          login_btn.click(force=True)
-      else:
-        log_print('-> 未找到主按钮，执行备用方案...')
-        page.locator('button').last.click(force=True)
+          log_print('-> 未找到标准登录按钮，正在遍历查找可用按钮...')
+          all_btns = page.locator('button, .el-button').all()
+          for btn in all_btns:
+            try:
+              if btn.is_visible():
+                txt = btn.inner_text()
+                if '登录' in txt or '登 录' in txt:
+                  btn.click(force=True)
+                  log_print(f'-> 成功点击匹配按钮: {txt}')
+                  break
+            except:
+              continue
 
       # 等待页面跳转
       page.wait_for_timeout(4000)
@@ -309,8 +322,11 @@ def auto_login_and_close_ad(page, username, password):
 
         return True
       else:
-        log_print('⚠️ 验证码可能识别错误，正在自动刷新验证码重试...')
-        captcha_locator.click()
+        log_print('⚠️ 登录未成功（仍在登录页），正在自动刷新验证码重试...')
+        try:
+          captcha_locator.click()
+        except:
+          pass
         page.wait_for_timeout(1000)
 
     except Exception as e:
@@ -581,7 +597,7 @@ def main():
       elapsed_time = time.time() - script_start_time
       if elapsed_time > MAX_RUN_SECONDS:
         log_print(
-            '⏰ [限时保护触发] 本次运行已满 5.5 小时，脚本已安全保存当前进度并退出。'
+            '⏰ 【限时保护触发】本次运行已满 5.5 小时，脚本已安全保存当前进度并退出。'
         )
         break
 
