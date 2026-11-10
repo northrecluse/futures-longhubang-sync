@@ -201,7 +201,7 @@ def safe_goto(page, url, timeout=60000, wait_until='domcontentloaded'):
     for attempt in range(1, 4):
         try:
             page.goto(url, wait_until=wait_until, timeout=timeout)
-            page.wait_for_timeout(1500)  # 优化：增加页面跳转后的基础缓冲时间
+            page.wait_for_timeout(1500)
             return True
         except Exception as e:
             log_print(f'⚠️ 打开页面超时或异常 ({e})，正在重试...')
@@ -214,8 +214,7 @@ def auto_login_and_close_ad(page, username, password):
     if not safe_goto(page, 'https://jiaoyikecha.com/#/user/login'):
         return False
 
-    # 优化 1：打开登录页后给予页面 DOM 和元素加载缓冲时间
-    page.wait_for_timeout(2500)
+    page.wait_for_timeout(3000)
 
     ocr = ddddocr.DdddOcr(show_ad=False)
     max_retries = 10
@@ -224,7 +223,6 @@ def auto_login_and_close_ad(page, username, password):
         try:
             log_print(f'\n--- 第 {attempt} 次尝试登录 ---')
             
-            # 等待输入框渲染可用
             user_locator = page.locator(
                 "input[placeholder*='账号'], input[placeholder*='手机号'], input[type='text']"
             ).first
@@ -234,25 +232,23 @@ def auto_login_and_close_ad(page, username, password):
                 "input[placeholder*='密码'], input[type='password']"
             ).first
 
-            # 输入账号密码并留出键盘事件模拟时间
             user_locator.click()
             user_locator.fill('')
             user_locator.type(username, delay=40)
             user_locator.dispatch_event('input')
-            page.wait_for_timeout(300)
+            page.wait_for_timeout(400)
 
             pwd_locator.click()
             pwd_locator.fill('')
             pwd_locator.type(password, delay=40)
             pwd_locator.dispatch_event('input')
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(600)
 
-            # 优化 2：等待验证码图片加载完毕后再截图
             captcha_locator = page.locator(
                 "img[src*='captcha'], img[class*='code'], .el-input + img, canvas, form img"
             ).first
             captcha_locator.wait_for(state='visible', timeout=8000)
-            page.wait_for_timeout(600)  # 确保验证码图片已被浏览器完全渲染
+            page.wait_for_timeout(1000)
 
             captcha_bytes = captcha_locator.screenshot()
             captcha_code = ocr.classification(captcha_bytes)
@@ -265,7 +261,7 @@ def auto_login_and_close_ad(page, username, password):
             code_locator.fill('')
             code_locator.type(captcha_code, delay=40)
             code_locator.dispatch_event('input')
-            page.wait_for_timeout(800)
+            page.wait_for_timeout(1000)
 
             login_btn = page.locator(
                 ".el-button--primary, button:has-text('登录')"
@@ -281,11 +277,11 @@ def auto_login_and_close_ad(page, username, password):
             else:
                 page.locator('button').last.click(force=True)
 
-            # 优化 3：等待服务器响应登录接口及页面跳转
-            log_print('正在等待登录响应与跳转...')
-            page.wait_for_timeout(5000)
+            log_print('正在等待服务器响应登录与跳转（9秒缓冲）...')
+            page.wait_for_timeout(9000)
 
-            if 'login' not in page.url:
+            current_url = page.url
+            if 'login' not in current_url and 'user/login' not in current_url:
                 log_print('🎉 恭喜！成功登录系统！')
                 page.wait_for_timeout(3000)
                 try:
@@ -300,9 +296,12 @@ def auto_login_and_close_ad(page, username, password):
                     pass
                 return True
             else:
-                log_print('⚠️ 验证码识别错误或登录未成功，刷新验证码并重试...')
-                captcha_locator.click()
-                page.wait_for_timeout(1500)
+                log_print('⚠️ 当前仍在登录页，判定登录未成功，正在刷新验证码重试...')
+                try:
+                    captcha_locator.click()
+                except Exception:
+                    pass
+                page.wait_for_timeout(2000)
         except Exception as e:
             log_print(f'❌ 登录尝试过程中发生异常: {e}')
             page.wait_for_timeout(2000)
@@ -403,7 +402,6 @@ def get_longhubang_summary_str(v_data):
     df_l, df_s = v_data['long'], v_data['short']
     summary_parts = []
 
-    # 多头前2名信息
     if not df_l.empty:
         l_items = []
         for idx, row in df_l.head(2).iterrows():
@@ -415,7 +413,6 @@ def get_longhubang_summary_str(v_data):
     else:
         summary_parts.append("多头Top2: 无数据")
 
-    # 空头前2名信息
     if not df_s.empty:
         s_items = []
         for idx, row in df_s.head(2).iterrows():
@@ -612,7 +609,6 @@ def main():
                     v_name, v_data = crawl_single_variety(page, date_str, v)
                     if v_name:
                         parsed_variety_data[v_name] = v_data
-                        # 优化：提取并拼接龙虎榜摘要输出到控制台
                         summary_info = get_longhubang_summary_str(v_data)
                         log_print(
                             f'   📊 [{date_str}] 品种 [{i}/{total_v}] {v_name} 抓取成功{summary_info}'
