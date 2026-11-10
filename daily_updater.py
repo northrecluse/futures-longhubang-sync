@@ -208,7 +208,7 @@ def safe_goto(page, url, timeout=60000, wait_until='domcontentloaded'):
 
 
 def auto_login_and_close_ad(page, username, password):
-  """使用精准文本定位匹配绿色大按钮的登录模块"""
+  """自动填写账号密码、OCR识别验证码登录，精准点击登录按钮并自动关闭广告弹窗"""
   log_print('正在打开登录页面...')
   if not safe_goto(page, 'https://jiaoyikecha.com/#/user/login'):
     log_print('❌ 无法打开登录页面，网络异常！')
@@ -260,11 +260,11 @@ def auto_login_and_close_ad(page, username, password):
       code_locator.dispatch_event('input')
       page.wait_for_timeout(500)
 
-      # 3. 精准点击绿色区域的“登录”按钮
+      # 3. 精准定位并点击登录按钮（支持文本定位与 JS 强行触发双重保险）
       log_print('正在精准点击绿色区域的【登录】按钮...')
       clicked_success = False
       try:
-        login_text_btn = page.locator("text=登录").last
+        login_text_btn = page.locator('text=登录').last
         if login_text_btn.is_visible():
           login_text_btn.click(force=True)
           log_print('-> 成功通过文本定位点击了登录按钮')
@@ -284,20 +284,20 @@ def auto_login_and_close_ad(page, username, password):
                         }
                     }
                 """)
-        log_print('-> 已通过 JS 强行触发绿色区域点击')
+        log_print('-> 已通过 JS 强行触发登录点击')
 
       # 等待页面跳转
       page.wait_for_timeout(4000)
       current_url = page.url
       log_print(f'当前页面 URL: {current_url}')
 
+      # 4. 检查是否登录成功并关闭广告弹窗
       if 'login' not in current_url:
         log_print('🎉 恭喜！成功登录系统！')
 
         log_print('正在等待广告弹窗弹出...')
         page.wait_for_timeout(3000)
 
-        # 检测并自动关闭广告弹窗
         try:
           log_print('正在检测并关闭广告弹窗...')
           close_btn = page.locator(
@@ -316,7 +316,7 @@ def auto_login_and_close_ad(page, username, password):
 
         return True
       else:
-        log_print('⚠️ 登录未成功，正在自动刷新验证码重试...')
+        log_print('⚠️ 验证码可能识别错误，正在自动刷新验证码重试...')
         try:
           captcha_locator.click()
         except:
@@ -324,7 +324,7 @@ def auto_login_and_close_ad(page, username, password):
         page.wait_for_timeout(1000)
 
     except Exception as e:
-      log_print(f'❌ 尝试过程中发生异常: {e}')
+      log_print(f'❌ 尝试登录过程中发生异常: {e}')
       page.wait_for_timeout(1000)
 
   return False
@@ -609,7 +609,7 @@ def main():
           v_name, v_data = crawl_single_variety(page, date_str, v)
           if v_name:
             parsed_variety_data[v_name] = v_data
-            log_print(f'   📊 [{date_str}] 品种 [{i}/{total_v}] {v_name} 抓取成功')
+            log_print(f'    📊 [{date_str}] 品种 [{i}/{total_v}] {v_name} 抓取成功')
         except Exception as e:
           log_print(f'❌ 品种 {v} 抓取异常: {e}')
 
