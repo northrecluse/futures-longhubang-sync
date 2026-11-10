@@ -208,7 +208,7 @@ def safe_goto(page, url, timeout=60000, wait_until='domcontentloaded'):
 
 
 def auto_login_and_close_ad(page, username, password):
-  """终极稳健版登录模块：使用原生 JS 强力触发登录点击"""
+  """使用精准文本定位匹配绿色大按钮的登录模块"""
   log_print('正在打开登录页面...')
   if not safe_goto(page, 'https://jiaoyikecha.com/#/user/login'):
     log_print('❌ 无法打开登录页面，网络异常！')
@@ -260,27 +260,31 @@ def auto_login_and_close_ad(page, username, password):
       code_locator.dispatch_event('input')
       page.wait_for_timeout(500)
 
-      # 3. 终极 JS 强力点击登录按钮
-      log_print('正在通过 JS 强力触发登录提交...')
-      page.evaluate("""
-                () => {
-                    // 遍历页面中所有的按钮和主按钮元素
-                    const buttons = document.querySelectorAll('button, .el-button, .el-button--primary');
-                    for (let btn of buttons) {
-                        if (btn.innerText && (btn.innerText.includes('登录') || btn.innerText.includes('登 录'))) {
-                            btn.click();
-                            return true;
+      # 3. 精准点击绿色区域的“登录”按钮
+      log_print('正在精准点击绿色区域的【登录】按钮...')
+      clicked_success = False
+      try:
+        login_text_btn = page.locator("text=登录").last
+        if login_text_btn.is_visible():
+          login_text_btn.click(force=True)
+          log_print('-> 成功通过文本定位点击了登录按钮')
+          clicked_success = True
+      except Exception as e:
+        log_print(f'-> 文本定位点击异常: {e}')
+
+      if not clicked_success:
+        page.evaluate("""
+                    () => {
+                        const allElements = document.querySelectorAll('*');
+                        for (let el of allElements) {
+                            if (el.innerText && el.innerText.trim() === '登录' && el.children.length === 0) {
+                                el.click();
+                                break;
+                            }
                         }
                     }
-                    // 兜底：点击第一个主样式按钮
-                    const primaryBtn = document.querySelector('.el-button--primary');
-                    if (primaryBtn) {
-                        primaryBtn.click();
-                        return true;
-                    }
-                    return false;
-                }
-            """)
+                """)
+        log_print('-> 已通过 JS 强行触发绿色区域点击')
 
       # 等待页面跳转
       page.wait_for_timeout(4000)
