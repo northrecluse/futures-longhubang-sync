@@ -255,7 +255,8 @@ def auto_login_and_close_ad(page, username, password):
     return False
 
   page.wait_for_timeout(3000)
-  ocr = ddddocr.DdddOcr(show_ad=False)
+  # 开启 beta 模式，对数字和英文识别更精准
+  ocr = ddddocr.DdddOcr(show_ad=False, beta=True)
   max_retries = 10
 
   for attempt in range(1, max_retries + 1):
@@ -291,8 +292,22 @@ def auto_login_and_close_ad(page, username, password):
       page.wait_for_timeout(1000)
 
       captcha_bytes = captcha_locator.screenshot()
-      captcha_code = ocr.classification(captcha_bytes)
-      log_print(f'-> 【ddddocr】识别结果: {captcha_code}')
+      raw_captcha = ocr.classification(captcha_bytes)
+
+      # 过滤非英文数字字符（彻底防止汉字干扰）
+      captcha_code = ''.join(re.findall(r'[A-Za-z0-9]', raw_captcha))
+      log_print(
+          f'-> 【ddddocr】原始识别: {raw_captcha} => 过滤后有效验证码:'
+          f' {captcha_code}'
+      )
+
+      if not captcha_code:
+        log_print('⚠️ 验证码清洗后为空，刷新重试...')
+        try:
+          captcha_locator.click()
+        except Exception:
+          pass
+        continue
 
       code_locator = page.locator(
           "input[placeholder*='图形验证码'], input[placeholder*='验证码']"
@@ -612,13 +627,13 @@ def git_commit_and_push(output_folder, date_str):
 def main():
   log_print('=' * 60)
   log_print(
-      '🚀 启动期货龙虎榜智能分时接力采集程序 (2024.7.1-2026.10.31区间 + 云端5.5小时超时保护接力版)'
+      '🚀 启动期货龙虎榜智能分时接力采集程序 (2024.7.1-2026.10.31区间 + 验证码过滤 + 云端5.5小时超时保护)'
   )
   log_print('=' * 60)
 
   # 记录脚本启动的起始绝对时间戳
   start_wall_time = time.time()
-  # 设置最大运行时间上限：5小时20分钟（19200秒），留出安全富余时间让最后的推送完成并优雅退出
+  # 设置最大运行时间上限：5小时20分钟（19200秒）
   MAX_RUN_TIME = 5 * 3600 + 20 * 60
 
   target_dates = get_target_date_range_trade_days(
@@ -667,7 +682,7 @@ def main():
       return
 
     for idx, date_str in enumerate(pending_dates, 1):
-      # 【核心改动】每循环处理一个新日期前，先检查是否超出了 5.5 小时安全限制
+      # 每循环处理一个新日期前，先检查是否超出了 5.5 小时安全限制
       elapsed_time = time.time() - start_wall_time
       if elapsed_time > MAX_RUN_TIME:
         log_print(
