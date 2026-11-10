@@ -310,7 +310,8 @@ def crawl_single_variety(page, date_str, raw_variety):
     v_name = (raw_variety.split('/')[0] if '/' in raw_variety else raw_variety).strip()
     long_rows, short_rows = [], []
 
-    for _ in range(3):
+    # 优化点：增加内部重试机制与显式等待，解决加载慢导致空数据的问题
+    for attempt in range(1, 4):
         try:
             encoded_variety = urllib.parse.quote(v_name)
             target_url = f'https://jiaoyikecha.com/#/variety/position/variety={encoded_variety}/code=all/date={date_str}'
@@ -325,25 +326,14 @@ def crawl_single_variety(page, date_str, raw_variety):
             except:
                 pass
 
-            start_time = time.time()
-            while time.time() - start_time < 6:
-                page.wait_for_timeout(400)
-                is_rendered = page.evaluate("""
-                    () => {
-                        const bodyText = document.body.innerText || '';
-                        const tables = document.querySelectorAll('table');
-                        let hasTableWithData = false;
-                        for (let t of tables) {
-                            if (t.querySelectorAll('tr').length > 3) {
-                                hasTableWithData = true;
-                                break;
-                            }
-                        }
-                        return (bodyText.includes('多头') || bodyText.includes('空头')) && hasTableWithData;
-                    }
-                """)
-                if is_rendered:
-                    break
+            # 显式等待表格或无数据元素出现，避免死等或盲目截取
+            try:
+                page.wait_for_selector('table tr, .el-table__body tr, .no-data, div:has-text("暂无数据")', timeout=8000)
+            except:
+                pass
+
+            # 额外给一点缓冲时间确保完整渲染
+            page.wait_for_timeout(1000)
 
             table_data = page.evaluate("""
                 () => {
@@ -368,10 +358,15 @@ def crawl_single_variety(page, date_str, raw_variety):
             long_rows, short_rows = table_data.get('long_table', []), table_data.get(
                 'short_table', []
             )
+
+            # 如果成功抓到有效持仓行数，直接跳出重试
             if len(long_rows) > 2 or len(short_rows) > 2:
                 break
+            else:
+                # 没数据则稍作等待重试（可能接口还在异步响应）
+                page.wait_for_timeout(1500)
         except:
-            page.wait_for_timeout(800)
+            page.wait_for_timeout(1500)
 
     def clean_rows(rows, is_long=True):
         lst = []
@@ -589,8 +584,8 @@ def main():
                         top5_s_str = ", ".join([f"{r['席位/期货公司']}({r['净持仓']})" for _, r in df_s.head(5).iterrows()]) if not df_s.empty else "无数据"
 
                         log_print(f'    📊 [{date_str}] 品种 [{i}/{total_v}] {v_name} 抓取成功')
-                        log_print(f'       🔹 【多头 Top5】: {top5_l_str}')
-                        log_print(f'       🔸 【空头 Top5】: {top5_s_str}')
+                        log_print(f'        🔹 【多头 Top5】: {top5_l_str}')
+                        log_print(f'        🔸 【空头 Top5】: {top5_s_str}')
                 except Exception as e:
                     log_print(f'❌ 品种 {v} 抓取异常: {e}')
 
