@@ -208,7 +208,7 @@ def safe_goto(page, url, timeout=60000, wait_until='domcontentloaded'):
 
 
 def auto_login_and_close_ad(page, username, password):
-  """使用最初验证通过的稳健登录逻辑"""
+  """适应无头浏览器的稳健登录与广告关闭模块"""
   log_print('正在打开登录页面...')
   if not safe_goto(page, 'https://jiaoyikecha.com/#/user/login'):
     log_print('❌ 无法打开登录页面，网络异常！')
@@ -260,24 +260,31 @@ def auto_login_and_close_ad(page, username, password):
       code_locator.dispatch_event('input')
       page.wait_for_timeout(500)
 
-      # 3. 点击绿色主登录按钮（使用最初成功的点击逻辑）
-      log_print('正在精准点击绿色登录大按钮...')
-      login_btn = page.locator(
-          ".el-button--primary, button:has-text('登录')"
-      ).first
+      # 3. 增强的点击/提交策略（针对无头环境优化）
+      log_print('正在执行登录提交...')
 
-      if login_btn.count() > 0:
-        box = login_btn.bounding_box()
-        if box:
-          center_x = box['x'] + box['width'] / 2
-          center_y = box['y'] + box['height'] / 2
-          log_print(f'-> 绿色大按钮坐标: ({center_x}, {center_y})')
-          page.mouse.click(center_x, center_y, force=True)
-        else:
-          login_btn.click(force=True)
-      else:
-        log_print('-> 未找到主按钮，执行备用方案...')
-        page.locator('button').last.click(force=True)
+      # 策略 A：直接通过文本或常见选择器点击登录按钮
+      login_clicked = False
+      for selector in [
+          "button:has-text('登录')",
+          '.el-button--primary',
+          "button[type='submit']",
+          'div.el-button',
+      ]:
+        btn = page.locator(selector).first
+        if btn.count() > 0 and btn.is_visible():
+          try:
+            btn.click(force=True)
+            log_print(f'-> 通过选择器 [{selector}] 成功点击登录按钮')
+            login_clicked = True
+            break
+          except:
+            continue
+
+      # 策略 B：如果常规点击未生效，直接对验证码输入框按回车提交
+      if not login_clicked:
+        log_print('-> 尝试使用回车键提交表单...')
+        code_locator.press('Enter')
 
       # 等待页面跳转
       page.wait_for_timeout(4000)
@@ -309,8 +316,11 @@ def auto_login_and_close_ad(page, username, password):
 
         return True
       else:
-        log_print('⚠️ 验证码可能识别错误，正在自动刷新验证码重试...')
-        captcha_locator.click()
+        log_print('⚠️ 登录未成功，正在自动刷新验证码重试...')
+        try:
+          captcha_locator.click()
+        except:
+          pass
         page.wait_for_timeout(1000)
 
     except Exception as e:
