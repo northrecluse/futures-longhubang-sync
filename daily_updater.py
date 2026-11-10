@@ -21,7 +21,7 @@ def log_print(msg):
 def get_target_date_range_trade_days(
     start_date_str='2024-07-01', end_date_str='2026-10-31'
 ):
-  """获取从 2024-07-01 到 2026-10-31 指定范围内的所有实际交易日（自动排除周末及法定节假日）"""
+  """获取指定范围内的所有实际交易日（自动排除周末及法定节假日）"""
   start_dt = datetime.strptime(start_date_str, '%Y-%m-%d')
   end_dt = datetime.strptime(end_date_str, '%Y-%m-%d')
 
@@ -208,7 +208,7 @@ def safe_goto(page, url, timeout=60000, wait_until='domcontentloaded'):
 
 
 def auto_login_and_close_ad(page, username, password):
-  """自动填写账号密码、OCR识别验证码登录，精准点击登录按钮并自动关闭广告弹窗"""
+  """自动填写账号密码、OCR识别验证码，精准点击绿色大按钮并自动关闭广告弹窗"""
   log_print('正在打开登录页面...')
   if not safe_goto(page, 'https://jiaoyikecha.com/#/user/login'):
     log_print('❌ 无法打开登录页面，网络异常！')
@@ -260,31 +260,20 @@ def auto_login_and_close_ad(page, username, password):
       code_locator.dispatch_event('input')
       page.wait_for_timeout(500)
 
-      # 3. 精准定位并点击登录按钮（支持文本定位与 JS 强行触发双重保险）
-      log_print('正在精准点击绿色区域的【登录】按钮...')
-      clicked_success = False
-      try:
-        login_text_btn = page.locator('text=登录').last
-        if login_text_btn.is_visible():
-          login_text_btn.click(force=True)
-          log_print('-> 成功通过文本定位点击了登录按钮')
-          clicked_success = True
-      except Exception as e:
-        log_print(f'-> 文本定位点击异常: {e}')
-
-      if not clicked_success:
-        page.evaluate("""
-                    () => {
-                        const allElements = document.querySelectorAll('*');
-                        for (let el of allElements) {
-                            if (el.innerText && el.innerText.trim() === '登录' && el.children.length === 0) {
-                                el.click();
-                                break;
-                            }
-                        }
-                    }
-                """)
-        log_print('-> 已通过 JS 强行触发登录点击')
+      # 3. 精准定位绿色框中的主登录按钮（通过 .el-button--primary 样式与几何坐标点击，确保点中绿色大按钮）
+      log_print('正在精准点击绿色框中的【登录】大按钮...')
+      login_btn = page.locator('.el-button--primary').first
+      if login_btn.count() > 0:
+        box = login_btn.bounding_box()
+        if box:
+          center_x = box['x'] + box['width'] / 2
+          center_y = box['y'] + box['height'] / 2
+          log_print(f'-> 绿色大按钮坐标: ({center_x}, {center_y})')
+          page.mouse.click(center_x, center_y, force=True)
+        else:
+          login_btn.click(force=True)
+      else:
+        page.locator('button:has-text("登录")').first.click(force=True)
 
       # 等待页面跳转
       page.wait_for_timeout(4000)
@@ -316,11 +305,14 @@ def auto_login_and_close_ad(page, username, password):
 
         return True
       else:
-        log_print('⚠️ 验证码可能识别错误，正在自动刷新验证码重试...')
+        log_print(
+            '⚠️ 登录未成功（可能验证码错误），正在自动刷新验证码重试...'
+        )
         try:
           captcha_locator.click()
-          # 增加 2 秒等待，确保新验证码在云端加载渲染完成，避免下一次截图截到旧图或残影
-          page.wait_for_timeout(2000)
+          page.wait_for_timeout(
+              2000
+          )  # 等待新验证码图片在云端加载渲染完成
         except Exception as e:
           log_print(f'-> 刷新验证码异常: {e}')
 
