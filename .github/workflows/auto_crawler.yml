@@ -1,14 +1,12 @@
 name: Futures Data Crawler
 
-# 触发条件：可以每天定时运行，也可以在网页上手动触发
 on:
   schedule:
     - cron: '46 16 * * *'  # 每天下午 16:46 定时触发
-  workflow_dispatch:      # 允许你在 GitHub Actions 页面手动点按钮触发
+  workflow_dispatch:      # 允许在 GitHub Actions 页面手动点按钮触发
 
-# 【关键设置】赋予 GitHub Actions 读写仓库的权限，解决无法自动推送 Excel 到仓库的问题
 permissions:
-  contents: write
+  contents: write         # 赋予读写权限，允许推送生成的 Excel 到仓库
 
 jobs:
   run-crawler:
@@ -19,12 +17,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. 配置 Python 环境
+      # 2. 配置 Python 环境（已移除会引发报错的 cache 参数）
       - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip'
 
       # 3. 安装项目依赖库
       - name: Install dependencies
@@ -38,10 +35,10 @@ jobs:
           playwright install chromium
           playwright install-deps chromium
 
-      # 5. 运行你的 Python 爬虫脚本 (请根据你仓库中的脚本文件名调整，这里假设叫 daily_updater.py)
+      # 5. 运行 Python 爬虫脚本
       - name: Run Crawler Script
         env:
-          USER_PHONE: ${{ secrets.USER_PHONE }}  # 如果你在 Secrets 里配了账号密码，可以通过这种方式安全传入
+          USER_PHONE: ${{ secrets.USER_PHONE }}
           USER_PWD: ${{ secrets.USER_PWD }}
         run: |
           python daily_updater.py
@@ -52,5 +49,4 @@ jobs:
           git config --global user.name "GitHub Action Bot"
           git config --global user.email "action@github.com"
           git add futures_longhubang_data/
-          # 检查是否有文件改动，有改动才提交，防止无改动报错
           git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-sync batch futures data update [skip ci]" && git push)
