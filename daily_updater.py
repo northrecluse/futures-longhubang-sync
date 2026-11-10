@@ -505,7 +505,6 @@ def main():
     output_folder = 'futures_longhubang_data'
     os.makedirs(output_folder, exist_ok=True)
 
-    # 智能增量过滤：找出本地还没有抓取（或抓取文件异常过小）的日期
     pending_dates = []
     for d in target_dates:
         f_path = os.path.join(output_folder, f'全品种期货持仓龙虎榜汇总_{d}.xlsx')
@@ -580,7 +579,6 @@ def main():
                     if v_name:
                         parsed_variety_data[v_name] = v_data
                         
-                        # 【全新优化】提取并打印龙虎榜摘要信息（多空前五名）
                         df_l = v_data.get('long', pd.DataFrame())
                         df_s = v_data.get('short', pd.DataFrame())
                         
@@ -608,7 +606,7 @@ def main():
         )
         subprocess.run(['git', 'add', output_folder, AUTH_STATE_FILE], check=True)
         subprocess.run(
-            ['git', 'commit', -m', 'Auto-sync batch futures data and auth state update'],
+            ['git', 'commit', '-m', 'Auto-sync batch futures data and auth state update'],
             check=True,
         )
         subprocess.run(['git', 'push'], check=True)
