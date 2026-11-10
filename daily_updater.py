@@ -319,9 +319,10 @@ def auto_login_and_close_ad(page, username, password):
         log_print('⚠️ 验证码可能识别错误，正在自动刷新验证码重试...')
         try:
           captcha_locator.click()
-        except:
-          pass
-        page.wait_for_timeout(1000)
+          # 增加 2 秒等待，确保新验证码在云端加载渲染完成，避免下一次截图截到旧图或残影
+          page.wait_for_timeout(2000)
+        except Exception as e:
+          log_print(f'-> 刷新验证码异常: {e}')
 
     except Exception as e:
       log_print(f'❌ 尝试登录过程中发生异常: {e}')
