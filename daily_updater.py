@@ -21,7 +21,7 @@ def log_print(msg):
 def get_target_date_range_trade_days(
     start_date_str='2023-01-01', end_date_str=None
 ):
-    """获取从 start_date_str 到今天的指定日期范围内的所有实际交易日（自动排除周末及法定节假日）"""
+    """获取从 2023-01-01 到今天的指定日期范围内的所有实际交易日（自动排除周末及法定节假日）"""
     if not end_date_str:
         end_date_str = datetime.now().strftime('%Y-%m-%d')
 
@@ -201,11 +201,11 @@ def safe_goto(page, url, timeout=60000, wait_until='domcontentloaded'):
     for attempt in range(1, 4):
         try:
             page.goto(url, wait_until=wait_until, timeout=timeout)
-            page.wait_for_timeout(1500)
+            page.wait_for_timeout(1000)
             return True
         except Exception as e:
             log_print(f'⚠️ 打开页面超时或异常 ({e})，正在重试...')
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(1500)
     return False
 
 
@@ -214,42 +214,32 @@ def auto_login_and_close_ad(page, username, password):
     if not safe_goto(page, 'https://jiaoyikecha.com/#/user/login'):
         return False
 
-    page.wait_for_timeout(3000)
-
     ocr = ddddocr.DdddOcr(show_ad=False)
     max_retries = 10
 
     for attempt in range(1, max_retries + 1):
         try:
             log_print(f'\n--- 第 {attempt} 次尝试登录 ---')
-            
             user_locator = page.locator(
                 "input[placeholder*='账号'], input[placeholder*='手机号'], input[type='text']"
             ).first
-            user_locator.wait_for(state='visible', timeout=10000)
-
             pwd_locator = page.locator(
                 "input[placeholder*='密码'], input[type='password']"
             ).first
 
             user_locator.click()
             user_locator.fill('')
-            user_locator.type(username, delay=40)
+            user_locator.type(username, delay=30)
             user_locator.dispatch_event('input')
-            page.wait_for_timeout(400)
 
             pwd_locator.click()
             pwd_locator.fill('')
-            pwd_locator.type(password, delay=40)
+            pwd_locator.type(password, delay=30)
             pwd_locator.dispatch_event('input')
-            page.wait_for_timeout(600)
 
             captcha_locator = page.locator(
                 "img[src*='captcha'], img[class*='code'], .el-input + img, canvas, form img"
             ).first
-            captcha_locator.wait_for(state='visible', timeout=8000)
-            page.wait_for_timeout(1000)
-
             captcha_bytes = captcha_locator.screenshot()
             captcha_code = ocr.classification(captcha_bytes)
             log_print(f'-> 【ddddocr】识别结果: {captcha_code}')
@@ -259,9 +249,9 @@ def auto_login_and_close_ad(page, username, password):
             ).first
             code_locator.click()
             code_locator.fill('')
-            code_locator.type(captcha_code, delay=40)
+            code_locator.type(captcha_code, delay=30)
             code_locator.dispatch_event('input')
-            page.wait_for_timeout(1000)
+            page.wait_for_timeout(500)
 
             login_btn = page.locator(
                 ".el-button--primary, button:has-text('登录')"
@@ -277,34 +267,27 @@ def auto_login_and_close_ad(page, username, password):
             else:
                 page.locator('button').last.click(force=True)
 
-            log_print('正在等待服务器响应登录与跳转（9秒缓冲）...')
-            page.wait_for_timeout(9000)
-
-            current_url = page.url
-            if 'login' not in current_url and 'user/login' not in current_url:
+            page.wait_for_timeout(4000)
+            if 'login' not in page.url:
                 log_print('🎉 恭喜！成功登录系统！')
                 page.wait_for_timeout(3000)
                 try:
                     close_btn = page.locator(
                         '.el-dialog__headerbtn, .el-dialog__close, div[role="dialog"] button, [class*="close"]'
                     ).last
-                    if close_btn.is_visible(timeout=4000):
+                    if close_btn.is_visible(timeout=3000):
                         close_btn.click(force=True)
-                        page.wait_for_timeout(1000)
                         log_print('✅ 成功关闭广告弹窗！')
                 except Exception:
                     pass
                 return True
             else:
-                log_print('⚠️ 当前仍在登录页，判定登录未成功，正在刷新验证码重试...')
-                try:
-                    captcha_locator.click()
-                except Exception:
-                    pass
-                page.wait_for_timeout(2000)
+                log_print('⚠️ 验证码识别错误，正在自动刷新验证码重试...')
+                captcha_locator.click()
+                page.wait_for_timeout(1000)
         except Exception as e:
             log_print(f'❌ 登录尝试过程中发生异常: {e}')
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(1000)
     return False
 
 
