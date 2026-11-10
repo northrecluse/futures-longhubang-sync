@@ -208,7 +208,7 @@ def safe_goto(page, url, timeout=60000, wait_until='domcontentloaded'):
 
 
 def auto_login_and_close_ad(page, username, password):
-  """适应 GitHub Actions 无头环境的稳健登录与广告关闭模块"""
+  """终极稳健版登录模块：使用原生 JS 强力触发登录点击"""
   log_print('正在打开登录页面...')
   if not safe_goto(page, 'https://jiaoyikecha.com/#/user/login'):
     log_print('❌ 无法打开登录页面，网络异常！')
@@ -260,22 +260,27 @@ def auto_login_and_close_ad(page, username, password):
       code_locator.dispatch_event('input')
       page.wait_for_timeout(500)
 
-      # 3. 稳健点击登录按钮（兼容无头浏览器的 JS 点击与回车双保险）
-      log_print('正在提交登录...')
-      login_btn = page.locator(
-          ".el-button--primary, button:has-text('登录')"
-      ).first
-
-      if login_btn.count() > 0 and login_btn.is_visible():
-        try:
-          # 优先使用 JS 直接触发点击，避免无头模式下坐标拦截或遮挡
-          login_btn.evaluate('node => node.click()')
-          log_print('-> 已通过 JS 成功触发登录按钮点击')
-        except Exception:
-          login_btn.click(force=True)
-      else:
-        log_print('-> 未找到标准登录按钮，尝试回车提交...')
-        code_locator.press('Enter')
+      # 3. 终极 JS 强力点击登录按钮
+      log_print('正在通过 JS 强力触发登录提交...')
+      page.evaluate("""
+                () => {
+                    // 遍历页面中所有的按钮和主按钮元素
+                    const buttons = document.querySelectorAll('button, .el-button, .el-button--primary');
+                    for (let btn of buttons) {
+                        if (btn.innerText && (btn.innerText.includes('登录') || btn.innerText.includes('登 录'))) {
+                            btn.click();
+                            return true;
+                        }
+                    }
+                    // 兜底：点击第一个主样式按钮
+                    const primaryBtn = document.querySelector('.el-button--primary');
+                    if (primaryBtn) {
+                        primaryBtn.click();
+                        return true;
+                    }
+                    return false;
+                }
+            """)
 
       # 等待页面跳转
       page.wait_for_timeout(4000)
@@ -568,7 +573,6 @@ def main():
             '--allow-insecure-localhost',
         ],
     )
-    # 【关键修复】显式设定 1920x1080 桌面大视口，防止无头模式下响应式布局折叠导致登录按钮不可点击
     context = browser.new_context(
         ignore_https_errors=True, viewport={'width': 1920, 'height': 1080}
     )
