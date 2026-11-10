@@ -224,8 +224,6 @@ def auto_login_and_close_ad(page, context, username, password):
     for attempt in range(1, max_retries + 1):
         try:
             log_print(f'\n--- 第 {attempt} 次尝试登录 ---')
-            
-            # 【优化】如果不是第一次尝试，必须重新刷新页面以获取真正的全新验证码
             if attempt > 1:
                 log_print('🔄 正在重新刷新页面以获取新验证码...')
                 safe_goto(page, 'https://jiaoyikecha.com/#/user/login')
@@ -284,8 +282,6 @@ def auto_login_and_close_ad(page, context, username, password):
             if 'login' not in page.url:
                 log_print('🎉 恭喜！成功登录系统！')
                 page.wait_for_timeout(3000)
-                
-                # 【优化】登录成功后立即保存 Cookie 状态到文件
                 context.storage_state(path=AUTH_STATE_FILE)
                 log_print('✅ 已成功保存登录会话状态到本地 (auth_state.json)')
 
@@ -537,8 +533,7 @@ def main():
                 '--ignore-certificate-errors',
             ],
         )
-        
-        # 【核心新增】检查本地是否存在已保存的 Cookie 凭证文件，如果存在则自动加载
+
         context_args = {'ignore_https_errors': True}
         if os.path.exists(AUTH_STATE_FILE):
             log_print('📂 发现本地历史登录凭证文件 (auth_state.json)，正在加载 Cookie 免登录...')
@@ -550,12 +545,10 @@ def main():
         page = context.new_page()
         page.set_default_timeout(60000)
 
-        # 【核心新增】通过访问一个具体数据页面来验证 Cookie 是否依然有效
         log_print('正在验证会话有效性...')
         safe_goto(page, 'https://jiaoyikecha.com/#/variety/position/variety=%E9%93%84/code=all/date=2023-01-03')
         page.wait_for_timeout(3000)
 
-        # 如果被重定向回登录页，说明 Cookie 已失效，执行自动登录降级策略
         if 'login' in page.url:
             log_print('⚠️ 历史会话已过期或不存在，开始执行自动登录...')
             if not auto_login_and_close_ad(page, context, username, password):
@@ -586,9 +579,17 @@ def main():
                     v_name, v_data = crawl_single_variety(page, date_str, v)
                     if v_name:
                         parsed_variety_data[v_name] = v_data
-                        log_print(
-                            f'    📊 [{date_str}] 品种 [{i}/{total_v}] {v_name} 抓取成功'
-                        )
+                        
+                        # 【全新优化】提取并打印龙虎榜摘要信息（多空前五名）
+                        df_l = v_data.get('long', pd.DataFrame())
+                        df_s = v_data.get('short', pd.DataFrame())
+                        
+                        top5_l_str = ", ".join([f"{r['席位/期货公司']}({r['净持仓']})" for _, r in df_l.head(5).iterrows()]) if not df_l.empty else "无数据"
+                        top5_s_str = ", ".join([f"{r['席位/期货公司']}({r['净持仓']})" for _, r in df_s.head(5).iterrows()]) if not df_s.empty else "无数据"
+
+                        log_print(f'    📊 [{date_str}] 品种 [{i}/{total_v}] {v_name} 抓取成功')
+                        log_print(f'       🔹 【多头 Top5】: {top5_l_str}')
+                        log_print(f'       🔸 【空头 Top5】: {top5_s_str}')
                 except Exception as e:
                     log_print(f'❌ 品种 {v} 抓取异常: {e}')
 
@@ -596,7 +597,6 @@ def main():
 
         browser.close()
 
-    # 自动同步推送到云端 GitHub 仓库（同时将 auth_state.json 纳入 Git 仓库管理）
     try:
         subprocess.run(
             ['git', 'config', '--global', 'user.name', 'GitHub Action Bot'],
@@ -606,10 +606,9 @@ def main():
             ['git', 'config', '--global', 'user.email', 'action@github.com'],
             check=True,
         )
-        # 顺便把 auth_state.json 一起加进 git 仓库，确保云端每次都能读取最新凭证
         subprocess.run(['git', 'add', output_folder, AUTH_STATE_FILE], check=True)
         subprocess.run(
-            ['git', 'commit', '-m', 'Auto-sync batch futures data and auth state update'],
+            ['git', 'commit', -m', 'Auto-sync batch futures data and auth state update'],
             check=True,
         )
         subprocess.run(['git', 'push'], check=True)
